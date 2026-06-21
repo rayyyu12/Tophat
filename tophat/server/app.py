@@ -25,6 +25,9 @@ from tophat.store.config import load_settings, update_settings
 STATIC_DIR = Path(__file__).parent / "static"
 PUBLIC_PATHS = {"/login", "/api/login"}
 SECURE_COOKIES = os.getenv("TOPHAT_HTTPS", "").lower() in ("1", "true", "yes")
+# How often the WS pushes a snapshot to the UI. Cheap: build_snapshot is cached
+# (SNAPSHOT_TTL), so a fast UI cadence does NOT mean a fast broker poll cadence.
+WS_INTERVAL = float(os.getenv("TOPHAT_WS_INTERVAL", "3"))
 
 
 @asynccontextmanager
@@ -87,9 +90,23 @@ def create_app() -> FastAPI:
         s["auto_execute"] = load_settings().auto_execute
         return s
 
+    @app.get("/api/accounts")
+    def list_accounts():
+        return service.list_accounts_detail(app.state.broker, mode=app.state.mode)
+
+    @app.post("/api/accounts/{account_id}/lifecycle")
+    def patch_lifecycle(account_id: int, body: dict):
+        return service.update_account_lifecycle(account_id, body, app.state.broker)
+
     @app.post("/api/accounts/{account_id}/toggle")
     def toggle(account_id: int):
         return {"account_id": account_id, "enabled": service.toggle_account(account_id)}
+
+    @app.post("/api/accounts/{account_id}/set-enabled")
+    def set_enabled(account_id: int, body: dict):
+        enabled = bool((body or {}).get("enabled", True))
+        return {"account_id": account_id,
+                "enabled": service.set_account_enabled(account_id, enabled)}
 
     @app.post("/api/accounts/{account_id}/payout-taken")
     def payout_taken(account_id: int):
@@ -101,12 +118,20 @@ def create_app() -> FastAPI:
 
     @app.post("/api/settings")
     async def post_settings(patch: dict):
-        return asdict(update_settings(patch))
+        updated = update_settings(patch)
+        # auto_execute drives Execute-button visibility — bust the cache so the
+        # change shows on the next refresh instead of waiting out SNAPSHOT_TTL.
+        service.invalidate_snapshot_cache()
+        return asdict(updated)
 
     @app.post("/api/run")
     def run(body: dict | None = None):
-        execute = bool((body or {}).get("execute", False))
-        return service.run_session(app.state.broker, execute=execute)
+        body = body or {}
+        execute = bool(body.get("execute", False))
+        # Manual Execute from the dashboard is an explicit, confirmed operator
+        # action — it fires regardless of the auto-execute (automation) switch.
+        manual = bool(body.get("manual", False))
+        return service.run_session(app.state.broker, execute=execute, manual=manual)
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
@@ -118,7 +143,7 @@ def create_app() -> FastAPI:
             while True:
                 snap = service.build_snapshot(app.state.broker, mode=app.state.mode)
                 await socket.send_json(snap)
-                await asyncio.sleep(3.0)
+                await asyncio.sleep(WS_INTERVAL)
         except (WebSocketDisconnect, Exception):
             return
 

@@ -6,11 +6,34 @@ __pycache__/
 venv/
 _test_signalr.py
 
-# Dev-only data — never deploy to the live server (see docs/BUILD_PLAN.md §3)
-data/*.txt
-data/cache/
-# Runtime state (per-deployment; not source)
-data/account_states.json
-data/account_registry.json
-data/settings.json
-data/schedule_state.json
+# Runtime state, secrets, login DB, and large local market data.
+# The app re-creates data/ on startup (see tophat/store/paths.py) — nothing here
+# belongs in the repo. NOTE: data/.secret (session-signing key) and data/tophat.db
+# (users + password hashes) were previously committed; they are now untracked.
+data/
+
+# Local research / backtest scripts + datasets — kept locally, not shipped.
+research/
+
+# Root-level dev shim scripts (thin redirects into research.* / tophat.*).
+# tophat.py is the real entry point.
+/backtest.py
+/backtest_flip.py
+/backtest_nuke.py
+/backtest_nuke_twoday.py
+/backtest_report.py
+/data_loader.py
+/engine.py
+/inspect_data.py
+/monte_carlo.py
+/monte_carlo_eval_batching.py
+/monte_carlo_scenarios.py
+/pipeline.py
+/probe.py
+/run_campaign_compare.py
+/runner.py
+
+# Editor / agent tooling caches
+.cursor/
+.agents/
+skills-lock.json

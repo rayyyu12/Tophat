@@ -22,15 +22,15 @@ class MockBroker:
         self._positions: dict[int, list[dict]] = {}
         self._order_seq = itertools.count(1)
         self._accounts: list[BrokerAccount] = []
-        for i in range(n_eval):                       # combines start at $50k
+        for i in range(n_eval):
             aid = next(_ids)
             self._accounts.append(BrokerAccount(
-                aid, f"Combine-{i+1}", 50_000 + rng.choice([0, 750, 1500, -950]),
+                aid, f"50KTC-V2-{i+1}", 50_000 + rng.choice([0, 750, 1500, -950]),
                 can_trade=True, simulated=True))
-        for i in range(n_funded):                     # Express funded start at $0
+        for i in range(n_funded):
             aid = next(_ids)
             self._accounts.append(BrokerAccount(
-                aid, f"XFA-{i+1}", rng.choice([0.0, 1200.0, 3200.0, 1940.0, -500.0, 3880.0]),
+                aid, f"EXPRESS-XFA-{i+1}", rng.choice([0.0, 1200.0, 3200.0, 1940.0, -500.0, 3880.0]),
                 can_trade=True, simulated=True))
 
     # --- Broker protocol ---

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,6 +15,8 @@ class AccountEntry:
     enabled: bool = True
     alias: str = ""
     notes: str = ""
+    force_inactive: bool = False  # operator override when broker canTrade is misleading
+    enabled_at: float = 0.0       # epoch when last enabled; eval-slot tiebreaker (newest waits)
 
 
 @dataclass
@@ -38,6 +41,8 @@ class AccountRegistry:
     def toggle(self, account_id: int) -> bool:
         e = self.entry(account_id)
         e.enabled = not e.enabled
+        if e.enabled:
+            e.enabled_at = time.time()   # newly enabled -> waits behind already-active accounts
         return e.enabled
 
 
@@ -60,7 +65,13 @@ def save_registry(reg: AccountRegistry, path: Path = REGISTRY_FILE) -> None:
             "show_disabled": reg.settings.show_disabled,
         },
         "accounts": {
-            str(k): {"enabled": e.enabled, "alias": e.alias, "notes": e.notes}
+            str(k): {
+                "enabled": e.enabled,
+                "alias": e.alias,
+                "notes": e.notes,
+                "force_inactive": e.force_inactive,
+                "enabled_at": e.enabled_at,
+            }
             for k, e in reg.accounts.items()
         },
     }

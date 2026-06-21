@@ -11,6 +11,7 @@ from pathlib import Path
 _TMP = tempfile.mkdtemp(prefix="tophat-tests-")
 os.environ["TOPHAT_DATA_DIR"] = _TMP
 os.environ.pop("TOPHAT_BROKER", None)  # force mock broker in API tests
+os.environ["TOPHAT_SNAPSHOT_TTL"] = "0"  # disable snapshot cache so tests never share stale state
 
 import pytest
 
@@ -34,7 +35,7 @@ def clean_state():
 class ControllableMock(MockBroker):
     """One account whose balance and flat-status the test drives directly."""
 
-    def __init__(self, name="XFA-1", balance=0.0):
+    def __init__(self, name="EXPRESS-XFA-1", balance=0.0):
         super().__init__(n_eval=0, n_funded=1, seed=1)
         self.aid = self._accounts[0].account_id
         self.flat = True

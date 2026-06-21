@@ -62,3 +62,42 @@ def test_max_nukes_per_day_zero():
     s = TopHatSettings(); s.max_nukes_per_day = 0
     out, _ = assign_day({1: funded(), 2: funded()}, s, "2026-06-22", ScheduleState())
     assert all(a.action == "idle" for a in out.values())
+
+
+def _eval(**kw):
+    d = dict(phase=Phase.EVAL, base_balance=50_000)
+    d.update(kw)
+    return AccountState(**d)
+
+
+def test_evals_batched_two_per_day():
+    accts = {i: _eval() for i in range(1, 4)}        # 3 evals enabled at once
+    out, _ = assign_day(accts, S, "2026-06-22", ScheduleState())
+    evals = [a for a in out.values() if a.action == "eval"]
+    idle = [a for a in out.values() if a.action == "idle"]
+    assert len(evals) == 2 and len(idle) == 1        # copy ≤2/day
+    assert "waiting for an eval slot" in idle[0].note
+
+
+def test_eval_slots_rotate_by_last_eval():
+    accts = {1: _eval(), 2: _eval(), 3: _eval()}
+    sched = ScheduleState(last_eval_date={1: "2026-06-21", 2: "2026-06-21"})  # 1,2 just ran
+    out, _ = assign_day(accts, S, "2026-06-22", sched)
+    assert out[3].action == "eval"                   # #3 waited longest -> gets a slot
+    assert sched.last_eval_date[3] == "2026-06-22"   # rotation advances
+
+
+def test_max_evals_per_day_float_is_coerced():
+    s = TopHatSettings(); s.max_evals_per_day = 2.0  # UI sends floats
+    out, _ = assign_day({1: _eval(), 2: _eval(), 3: _eval()}, s, "2026-06-22", ScheduleState())
+    assert sum(a.action == "eval" for a in out.values()) == 2
+
+
+def test_eval_slot_tiebreak_prefers_earlier_enabled():
+    accts = {1: _eval(), 2: _eval(), 3: _eval()}
+    # #1 has the lowest id but was enabled most recently -> it should be the one to wait,
+    # not bump #2/#3 which were already active.
+    enabled_at = {1: 100.0, 2: 1.0, 3: 1.0}
+    out, _ = assign_day(accts, S, "2026-06-22", ScheduleState(), enabled_at)
+    assert out[1].action == "idle"
+    assert out[2].action == "eval" and out[3].action == "eval"

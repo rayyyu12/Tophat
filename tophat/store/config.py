@@ -41,6 +41,7 @@ class TopHatSettings:
     flip_stagger_times: list[str] = field(
         default_factory=lambda: ["09:45", "10:00", "10:15", "10:30", "10:45"])
     max_nukes_per_day: int = 1         # decorrelation guarantee
+    max_evals_per_day: int = 2         # copy ≤2 evals/day (STRATEGY §1, correlated-exposure cap)
     auto_execute: bool = False         # False = dry-run plans only (safe default)
     auto_disable_on_payout_ready: bool = True
     hedge_guard: bool = True           # skip an entry if the account isn't flat

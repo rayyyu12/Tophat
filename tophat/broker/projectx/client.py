@@ -6,6 +6,7 @@ Docs: https://gateway.docs.projectx.com/
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -150,6 +151,14 @@ class ProjectXClient:
         if resp.status_code == 401 and auth:
             self.login()
             headers["Authorization"] = f"Bearer {self._token}"
+            resp = self._client.post(path, json=body, headers=headers)
+        if resp.status_code == 429:
+            # Rate limited — honor Retry-After (bounded) and retry once.
+            try:
+                wait = float(resp.headers.get("Retry-After", "1") or 1)
+            except ValueError:
+                wait = 1.0
+            time.sleep(min(max(wait, 0.5), 5.0))
             resp = self._client.post(path, json=body, headers=headers)
         try:
             data = resp.json()

@@ -9,6 +9,11 @@ from tophat.engine import AccountState, Phase
 from tophat.store.paths import STATES_FILE
 
 
+def state_to_dict(s: AccountState) -> dict:
+    """Public serializer for API responses."""
+    return _state_to_dict(s)
+
+
 def _state_to_dict(s: AccountState) -> dict:
     return {
         "phase": s.phase.value,

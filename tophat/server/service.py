@@ -6,7 +6,9 @@ scheduler + hedge-guard. Broker is pluggable (mock by default; ProjectX live).
 
 from __future__ import annotations
 
+import copy
 import os
+import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
@@ -15,12 +17,27 @@ from tophat.engine import Action, Phase, account_base, decide
 from tophat.services.guards import position_guard
 from tophat.services.lifecycle import mark_payout_taken, reconcile, record_pending
 from tophat.services.scheduler import assign_day, load_schedule, save_schedule
-from tophat.services.status import infer_phase, lifecycle_label
+from tophat.services.status import infer_phase_from_name, lifecycle_label, sync_phase_from_name
 from tophat.store.config import load_settings
 from tophat.store.registry import load_registry, save_registry
-from tophat.store.states import get_or_create, load_all, save_all
+from tophat.store.states import get_or_create, load_all, save_all, state_to_dict
 
 ET = ZoneInfo("America/New_York")
+
+# Short-TTL snapshot cache so the 3s WebSocket push doesn't hammer the broker
+# (one live snapshot = list_accounts + drive + positions×N). The UI still updates
+# every WS tick; the broker is only re-read when the cache goes stale or a
+# mutation (toggle / lifecycle / payout / manual run) invalidates it.
+SNAPSHOT_TTL = float(os.getenv("TOPHAT_SNAPSHOT_TTL", "12"))
+_SNAPSHOT_CACHE: dict = {"ts": 0.0, "data": None, "mode": None}
+# Drive (09:30–09:45 opening range) is stable once computed for the session.
+_DRIVE_CACHE: dict = {"date": "", "value": None, "src": ""}
+
+
+def invalidate_snapshot_cache() -> None:
+    """Force the next build_snapshot to re-read the broker (call after mutations)."""
+    _SNAPSHOT_CACHE["ts"] = 0.0
+    _SNAPSHOT_CACHE["data"] = None
 
 
 def make_broker():
@@ -34,27 +51,54 @@ def make_broker():
 
 
 def _drive(broker, nq: str) -> tuple[int, str]:
+    """Today's drive direction, cached for the session once a definitive read lands.
+
+    The opening-range read (09:30–09:45 ET) is stable for the rest of the day, so
+    we cache the first non-zero result and stop refetching bars on every snapshot.
+    """
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    if _DRIVE_CACHE["date"] == today and _DRIVE_CACHE["value"]:
+        return _DRIVE_CACHE["value"], _DRIVE_CACHE["src"]
     try:
-        return broker.drive_direction(nq), "stream/bars"
+        val = broker.drive_direction(nq)
     except Exception:
         return 0, "unavailable"
+    if val:  # only cache a definitive directional read
+        _DRIVE_CACHE.update(date=today, value=val, src="stream/bars")
+    return val, "stream/bars"
 
 
 def _side(direction: int) -> str:
     return "LONG" if direction == 1 else "SHORT" if direction == -1 else "FLAT"
 
 
+def _effective_can_trade(broker_can_trade: bool, entry) -> bool:
+    return broker_can_trade and not entry.force_inactive
+
+
 def _init_state(st, cfg, account) -> None:
-    """First time we see an account: infer phase from balance and set its baseline
-    (eval combine starts at $50k, Express funded starts at $0)."""
-    st.phase = infer_phase(account.name, account.balance)
+    """First time we see an account: infer phase from name and set its baseline."""
+    st.phase = infer_phase_from_name(account.name)
     st.base_balance = (cfg.funded_initial_balance if st.phase == Phase.FUNDED
                        else cfg.initial_balance)
     st.equity = account.balance
     st.peak_equity_eod = max(account.balance, st.base_balance)
 
 
-def build_snapshot(broker, *, mode: str) -> dict:
+def build_snapshot(broker, *, mode: str, force: bool = False) -> dict:
+    """Cached snapshot. Serves a recent build unless stale or `force`d, so the
+    3s WS push and frequent /api/state calls don't each hit the live broker."""
+    now = time.monotonic()
+    c = _SNAPSHOT_CACHE
+    if (not force and c["data"] is not None and c["mode"] == mode
+            and now - c["ts"] < SNAPSHOT_TTL):
+        return c["data"]
+    snap = _build_snapshot(broker, mode=mode)
+    c.update(ts=now, data=snap, mode=mode)
+    return snap
+
+
+def _build_snapshot(broker, *, mode: str) -> dict:
     settings = load_settings()
     cfg = settings.to_account_config()
     registry = load_registry()
@@ -64,6 +108,7 @@ def build_snapshot(broker, *, mode: str) -> dict:
     today = datetime.now(ET).strftime("%Y-%m-%d")
 
     accounts = broker.list_accounts()
+    phase_fixed = False
 
     # Enabled accounts drive today's assignments; all tradeable accounts get a plan preview
     # so the UI can show the would-be plan instantly when toggling enable on.
@@ -74,15 +119,27 @@ def build_snapshot(broker, *, mode: str) -> dict:
         st = get_or_create(states, a.account_id)
         if is_new:
             _init_state(st, cfg, a)
-        if a.can_trade and st.phase not in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
+            phase_fixed = True
+        elif sync_phase_from_name(st, a.name, cfg):
+            phase_fixed = True
+        entry = registry.entry(a.account_id)
+        tradeable = _effective_can_trade(a.can_trade, entry)
+        if tradeable and st.phase not in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
             tradeable_all[a.account_id] = st
-        if registry.is_enabled(a.account_id) and a.can_trade and st.phase not in (
+        if entry.enabled and tradeable and st.phase not in (
                 Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
             tradeable_states[a.account_id] = st
 
+    if phase_fixed:
+        save_all(states)
+
     sched = load_schedule()
-    assignments, _ = assign_day(tradeable_states, settings, today, sched)
-    preview_assignments, _ = assign_day(tradeable_all, settings, today, sched)
+    enabled_at = {a.account_id: registry.entry(a.account_id).enabled_at for a in accounts}
+    # Separate copies: assign_day mutates slot-rotation dates, and this is a read-only
+    # snapshot (never persisted), so the enabled-set and preview-set must not skew
+    # each other's eval/nuke slot rotation.
+    assignments, _ = assign_day(tradeable_states, settings, today, copy.deepcopy(sched), enabled_at)
+    preview_assignments, _ = assign_day(tradeable_all, settings, today, copy.deepcopy(sched), enabled_at)
 
     rows = []
     n_funded = n_eval = n_disabled = 0
@@ -100,15 +157,41 @@ def build_snapshot(broker, *, mode: str) -> dict:
         preview = preview_assignments.get(a.account_id)
         dec = decide(cfg, st, drive)
         terminal = st.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED)
-        preview_action = (st.phase.value if terminal
-                          else (preview.action if preview else dec.action.value))
-        preview_side = _side(dec.plan.direction) if dec.plan and not terminal else ""
-        preview_entry = preview.entry_time if preview else ""
-        preview_contracts = dec.plan.contracts if dec.plan else 0
-        preview_note = preview.note if preview else dec.note
-        if enabled or terminal:
-            plan_action = (st.phase.value if terminal
-                           else (asg.action if asg else dec.action.value))
+        tradeable = _effective_can_trade(a.can_trade, entry)
+        payout_ready = st.payout_ready and not terminal
+        # Status reflects the real operational state (decoupled from program phase):
+        # terminal phases surface as blown/passed/retired; otherwise active/inactive.
+        status = st.phase.value if terminal else ("active" if tradeable else "inactive")
+        if terminal:
+            preview_action = st.phase.value
+        elif payout_ready:
+            preview_action = "payout_ready"
+        else:
+            preview_action = preview.action if preview else dec.action.value
+        show_plan = dec.plan and not terminal and not payout_ready
+        preview_side = _side(dec.plan.direction) if show_plan else ""
+        preview_entry = "" if (terminal or payout_ready) else (preview.entry_time if preview else "")
+        preview_contracts = dec.plan.contracts if show_plan else 0
+        preview_note = ("awaiting withdrawal" if payout_ready
+                        else (preview.note if preview else dec.note))
+        if not tradeable and not terminal:
+            plan_action = "idle"
+            plan_side = plan_entry = ""
+            plan_contracts = 0
+            plan_note = ("marked inactive" if entry.force_inactive and a.can_trade
+                         else "inactive — can't trade")
+        elif terminal:
+            plan_action = st.phase.value
+            plan_side = plan_entry = plan_note = ""
+            plan_contracts = 0
+        elif payout_ready:
+            # Parked awaiting withdrawal — do NOT show flip/nuke (mirrors run_session).
+            plan_action = "payout_ready"
+            plan_side = plan_entry = ""
+            plan_contracts = 0
+            plan_note = "awaiting withdrawal"
+        elif enabled:
+            plan_action = asg.action if asg else dec.action.value
             plan_side = preview_side
             plan_entry = asg.entry_time if asg else ""
             plan_contracts = preview_contracts
@@ -121,10 +204,20 @@ def build_snapshot(broker, *, mode: str) -> dict:
         rows.append({
             "account_id": a.account_id,
             "name": entry.alias or a.name,
+            "broker_name": a.name,
             "enabled": enabled,
+            "can_trade": tradeable,
+            "broker_can_trade": a.can_trade,
+            "force_inactive": entry.force_inactive,
+            "trading_status": "active" if tradeable else "inactive",
+            "status": status,
+            "terminal": terminal,
             "simulated": a.simulated,
             "phase": st.phase.value,
-            "lifecycle": lifecycle_label(cfg, st),
+            # Program type (eval/funded) for the Phase column — stays eval/funded
+            # even for terminal accounts, so Status alone carries blown/passed/retired.
+            "program": infer_phase_from_name(a.name).value,
+            "lifecycle": lifecycle_label(cfg, st, can_trade=tradeable),
             "balance": round(a.balance, 2),
             "equity": round(st.equity, 2),
             "peak": round(st.peak_equity_eod, 2),
@@ -154,8 +247,10 @@ def build_snapshot(broker, *, mode: str) -> dict:
         "drive": _side(drive),
         "drive_source": drive_src,
         "as_of": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
+        "as_of_iso": datetime.now(ET).isoformat(),  # offset-aware; UI localizes to viewer tz
         "counts": {"total": len(accounts), "funded": n_funded, "eval": n_eval, "disabled": n_disabled},
         "auto_execute": settings.auto_execute,
+        "max_evals_per_day": settings.max_evals_per_day,
         "accounts": rows,
     }
 
@@ -164,15 +259,35 @@ def toggle_account(account_id: int) -> bool:
     reg = load_registry()
     new = reg.toggle(account_id)
     save_registry(reg)
+    invalidate_snapshot_cache()
     return new
 
 
+def set_account_enabled(account_id: int, enabled: bool) -> bool:
+    """Idempotent enable/disable (set, not flip) — safe for rapid repeated calls."""
+    reg = load_registry()
+    e = reg.entry(account_id)
+    if enabled and not e.enabled:
+        e.enabled_at = time.time()  # off->on transition waits behind already-active accounts
+    e.enabled = enabled
+    save_registry(reg)
+    invalidate_snapshot_cache()
+    return e.enabled
+
+
 def run_session(broker, *, execute: bool, respect_times: bool = False,
-                now_et: datetime | None = None) -> dict:
+                now_et: datetime | None = None, manual: bool = False) -> dict:
     """Reconcile closed trades, then fire today's due plan.
 
-    execute=True places real orders (double-gated by settings.auto_execute) AND
-    reconciles outcomes into state; otherwise it's a read-only dry-run preview.
+    execute=True places real orders AND reconciles outcomes into state; otherwise
+    it's a read-only dry-run preview.
+
+    Two execution paths:
+      - scheduler (manual=False): gated by settings.auto_execute — only fires when
+        automation is armed.
+      - manual operator (manual=True): an explicit, confirmed human action, so it
+        fires regardless of auto_execute (still mock unless TOPHAT_BROKER=live).
+
     respect_times=True (scheduler) only fires accounts whose stagger slot has
     arrived; False (manual Execute) fires everything still due today.
     """
@@ -185,19 +300,24 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
     now = now_et or datetime.now(ET)
     today = now.strftime("%Y-%m-%d")
     hhmm = now.strftime("%H:%M")
-    really_execute = execute and settings.auto_execute
+    really_execute = execute and (manual or settings.auto_execute)
 
     accounts = broker.list_accounts()
     balance = {a.account_id: a.balance for a in accounts}
+    phase_fixed = False
 
     tradeable = {}
     for a in accounts:
-        if not a.can_trade or not registry.is_enabled(a.account_id):
+        entry = registry.entry(a.account_id)
+        if not _effective_can_trade(a.can_trade, entry) or not entry.enabled:
             continue
         is_new = a.account_id not in states
         st = get_or_create(states, a.account_id)
         if is_new:
             _init_state(st, cfg, a)
+            phase_fixed = True
+        elif sync_phase_from_name(st, a.name, cfg):
+            phase_fixed = True
         tradeable[a.account_id] = st
 
     # 1. Reconcile closed trades -> advance the payout cycle (live only).
@@ -213,7 +333,8 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             if st.payout_ready and settings.auto_disable_on_payout_ready and registry.is_enabled(aid):
                 registry.entry(aid).enabled = False  # surface for manual withdrawal
 
-    assignments, sched = assign_day(tradeable, settings, today, load_schedule())
+    enabled_at = {aid: registry.entry(aid).enabled_at for aid in tradeable}
+    assignments, sched = assign_day(tradeable, settings, today, load_schedule(), enabled_at)
 
     # 2. Fire due accounts.
     results = []
@@ -257,6 +378,9 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
         save_schedule(sched)
         save_all(states)
         save_registry(registry)
+        invalidate_snapshot_cache()  # positions/state changed — next snapshot is fresh
+    elif phase_fixed:
+        save_all(states)
     return {"executed": really_execute, "drive": _side(drive), "drive_source": drive_src,
             "orders_placed": placed, "reconciled": reconciled, "results": results}
 
@@ -276,4 +400,105 @@ def mark_payout(account_id: int) -> dict:
     if st.phase.value != "retired":
         reg.entry(account_id).enabled = True
         save_registry(reg)
+    invalidate_snapshot_cache()
     return {"account_id": account_id, "payouts_taken": st.payouts_taken, "phase": st.phase.value}
+
+
+_LIFECYCLE_FIELDS = {
+    "phase", "days_traded", "payouts_taken", "winning_days_this_cycle",
+    "nuke_tries_this_cycle", "nuke_hit_this_cycle", "payout_ready",
+    "equity", "peak_equity_eod", "base_balance", "locked_out_today",
+}
+_REGISTRY_FIELDS = {"alias", "notes", "enabled", "force_inactive"}
+
+
+def list_accounts_detail(broker, *, mode: str) -> list[dict]:
+    """Full account rows for the edit-accounts page."""
+    snap = build_snapshot(broker, mode=mode)
+    states = load_all()
+    registry = load_registry()
+    cfg = load_settings().to_account_config()
+    by_id = {r["account_id"]: r for r in snap["accounts"]}
+    out = []
+    for a in broker.list_accounts():
+        row = by_id.get(a.account_id)
+        if not row:
+            continue
+        st = states[a.account_id]
+        entry = registry.entry(a.account_id)
+        tradeable = _effective_can_trade(a.can_trade, entry)
+        out.append({
+            **row,
+            "alias": entry.alias,
+            "notes": entry.notes,
+            "force_inactive": entry.force_inactive,
+            "lifecycle": lifecycle_label(cfg, st, can_trade=tradeable),
+            "state": state_to_dict(st),
+        })
+    out.sort(key=lambda r: (r["phase"] != "funded", r["name"]))
+    return out
+
+
+def update_account_lifecycle(account_id: int, patch: dict, broker) -> dict:
+    """Patch lifecycle state and registry fields for one account."""
+    accounts = {a.account_id: a for a in broker.list_accounts()}
+    if account_id not in accounts:
+        return {"account_id": account_id, "error": "unknown account"}
+
+    settings = load_settings()
+    cfg = settings.to_account_config()
+    states = load_all()
+    registry = load_registry()
+    is_new = account_id not in states
+    st = get_or_create(states, account_id)
+    if is_new:
+        _init_state(st, cfg, accounts[account_id])
+
+    for key in _LIFECYCLE_FIELDS:
+        if key not in patch:
+            continue
+        val = patch[key]
+        if key == "phase":
+            st.phase = Phase(str(val))
+        elif key in ("nuke_hit_this_cycle", "payout_ready", "locked_out_today"):
+            setattr(st, key, bool(val))
+        elif key in ("days_traded", "payouts_taken", "winning_days_this_cycle",
+                     "nuke_tries_this_cycle"):
+            setattr(st, key, int(val))
+        else:
+            setattr(st, key, float(val))
+
+    entry = registry.entry(account_id)
+    if "alias" in patch:
+        entry.alias = str(patch["alias"]).strip()
+    if "notes" in patch:
+        entry.notes = str(patch["notes"]).strip()
+    if "enabled" in patch:
+        new_enabled = bool(patch["enabled"])
+        if new_enabled and not entry.enabled:
+            entry.enabled_at = time.time()  # transition off->on: waits behind active accounts
+        entry.enabled = new_enabled
+    if "force_inactive" in patch:
+        entry.force_inactive = bool(patch["force_inactive"])
+
+    if "sync_balance" in patch and patch["sync_balance"]:
+        bal = accounts[account_id].balance
+        st.equity = bal
+        st.peak_equity_eod = max(st.peak_equity_eod, bal)
+
+    save_all(states)
+    save_registry(registry)
+    invalidate_snapshot_cache()
+    a = accounts[account_id]
+    eff = _effective_can_trade(a.can_trade, entry)
+    return {
+        "account_id": account_id,
+        "ok": True,
+        "lifecycle": lifecycle_label(cfg, st, can_trade=eff),
+        "state": state_to_dict(st),
+        "enabled": entry.enabled,
+        "force_inactive": entry.force_inactive,
+        "broker_can_trade": a.can_trade,
+        "can_trade": eff,
+        "alias": entry.alias,
+    }

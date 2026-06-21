@@ -24,6 +24,7 @@ from tophat.store.paths import SCHEDULE_FILE
 @dataclass
 class ScheduleState:
     last_nuke_date: dict[int, str] = field(default_factory=dict)  # account_id -> YYYY-MM-DD
+    last_eval_date: dict[int, str] = field(default_factory=dict)  # account_id -> YYYY-MM-DD
     last_run_date: str = ""
 
 
@@ -33,6 +34,7 @@ def load_schedule(path: Path = SCHEDULE_FILE) -> ScheduleState:
     raw = json.loads(path.read_text(encoding="utf-8"))
     return ScheduleState(
         last_nuke_date={int(k): v for k, v in raw.get("last_nuke_date", {}).items()},
+        last_eval_date={int(k): v for k, v in raw.get("last_eval_date", {}).items()},
         last_run_date=raw.get("last_run_date", ""),
     )
 
@@ -41,6 +43,7 @@ def save_schedule(s: ScheduleState, path: Path = SCHEDULE_FILE) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "last_nuke_date": {str(k): v for k, v in s.last_nuke_date.items()},
+        "last_eval_date": {str(k): v for k, v in s.last_eval_date.items()},
         "last_run_date": s.last_run_date,
     }
     path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
@@ -65,25 +68,45 @@ def assign_day(
     settings: TopHatSettings,
     today: str,
     sched: ScheduleState | None = None,
+    enabled_at: dict[int, float] | None = None,
 ) -> tuple[dict[int, Assignment], ScheduleState]:
     """Return per-account assignments for `today` and the updated schedule state.
 
     `accounts` should already be filtered to enabled + tradeable accounts.
+    `enabled_at` (account_id -> epoch enabled) breaks eval-slot ties so a freshly
+    enabled account waits behind ones already holding a slot, rather than bumping them.
     """
     sched = sched or load_schedule()
+    enabled_at = enabled_at or {}
     out: dict[int, Assignment] = {}
 
+    eval_candidates: list[int] = []
     nuke_candidates: list[int] = []
     flip_accounts: list[int] = []
     for aid, st in accounts.items():
         if st.phase in TERMINAL:
             out[aid] = Assignment(aid, st.phase.value, "", st.phase.value)
         elif st.phase == Phase.EVAL:
-            out[aid] = Assignment(aid, "eval", settings.nuke_entry_time, "eval day")
+            eval_candidates.append(aid)
         elif _needs_nuke(st):
             nuke_candidates.append(aid)
         else:
             flip_accounts.append(aid)
+
+    # Eval batching: copy at most `max_evals_per_day` evals on any day (STRATEGY §1 —
+    # limits correlated eval exposure). Priority: longest wait since last eval, then
+    # earliest enabled (so a freshly enabled account waits, not an already-active one),
+    # then id. The rest idle until a slot frees up. Mirrors the nuke cap.
+    eval_candidates.sort(key=lambda a: (sched.last_eval_date.get(a, ""), enabled_at.get(a, 0.0), a))
+    eval_slots = max(0, int(settings.max_evals_per_day))
+    evaling = set(eval_candidates[:eval_slots])
+    for aid in eval_candidates:
+        if aid in evaling:
+            out[aid] = Assignment(aid, "eval", settings.nuke_entry_time,
+                                  f"eval slot ({eval_slots}/day)")
+            sched.last_eval_date[aid] = today
+        else:
+            out[aid] = Assignment(aid, "idle", "", "waiting for an eval slot")
 
     # Order nuke candidates: pending recoveries first, then longest-since-last-nuke.
     def sort_key(aid: int):
@@ -93,7 +116,7 @@ def assign_day(
         return (0 if recovery else 1, last, aid)
 
     nuke_candidates.sort(key=sort_key)
-    slots = max(0, settings.max_nukes_per_day)
+    slots = max(0, int(settings.max_nukes_per_day))
     nuking = set(nuke_candidates[:slots])
 
     for aid in nuke_candidates:

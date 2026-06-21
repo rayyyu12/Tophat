@@ -5,22 +5,43 @@ from __future__ import annotations
 from tophat.engine import AccountConfig, AccountState, Phase, is_nuke_cycle
 
 
-PHASE_SPLIT = 25_000.0   # eval combine ~$50k vs funded ~$0 — balance is the clean discriminator
+def infer_phase_from_name(name: str) -> Phase:
+    """Topstep account type from the name: Express funded vs 50KTC eval."""
+    upper = name.upper()
+    if "EXPRESS" in upper:
+        return Phase.FUNDED
+    if "50KTC" in upper:
+        return Phase.EVAL
+    return Phase.EVAL
 
 
-def infer_phase(name: str, balance: float) -> Phase:
-    """Funded (Express) accounts start at $0; eval combines start at $50k. Balance is
-    far more reliable than the name (which varies and can even contain 'Express')."""
-    return Phase.FUNDED if balance < PHASE_SPLIT else Phase.EVAL
+def infer_phase(name: str, balance: float | None = None) -> Phase:
+    """Alias kept for callers that passed balance; name is the source of truth."""
+    return infer_phase_from_name(name)
 
 
-def lifecycle_label(cfg: AccountConfig, state: AccountState) -> str:
+def sync_phase_from_name(state: AccountState, name: str, cfg: AccountConfig) -> bool:
+    """Align eval/funded phase with the account name. Returns True if phase changed."""
+    if state.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
+        return False
+    inferred = infer_phase_from_name(name)
+    if state.phase not in (Phase.EVAL, Phase.FUNDED) or state.phase == inferred:
+        return False
+    state.phase = inferred
+    state.base_balance = (cfg.funded_initial_balance if inferred == Phase.FUNDED
+                          else cfg.initial_balance)
+    return True
+
+
+def lifecycle_label(cfg: AccountConfig, state: AccountState, *, can_trade: bool = True) -> str:
     if state.phase == Phase.RETIRED:
         return "retired"
     if state.phase == Phase.PASSED:
         return "eval passed — funded incoming"
     if state.phase == Phase.BLOWN:
         return "blown"
+    if not can_trade:
+        return "inactive — can't trade"
     if state.phase == Phase.EVAL:
         return f"eval day {state.days_traded + 1}"
     if is_nuke_cycle(state.payouts_taken) and not state.nuke_hit_this_cycle:
