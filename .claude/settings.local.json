@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la data/cache/)",
+      "Bash(ls .venv/Scripts/python*)",
+      "Bash(.venv/Scripts/python.exe research/backtest_nuke.py)",
+      "Bash(.venv/Scripts/python.exe research/backtest_flip.py)",
+      "Bash(.venv/Scripts/python.exe research/backtest_eval.py)",
+      "Bash(.venv/Scripts/python.exe research/backtest_nuke_twoday.py)",
+      "Bash(.venv/Scripts/python.exe research/compare_flip_brackets.py)",
+      "Bash(.venv/Scripts/python.exe research/monte_carlo.py)",
+      "Bash(.venv/Scripts/python.exe research/monte_carlo_scenarios.py)",
+      "Bash(.venv/Scripts/python.exe research/run_3200_campaign.py)"
+    ]
+  }
+}
