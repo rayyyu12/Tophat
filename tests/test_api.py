@@ -24,6 +24,15 @@ def test_login_bad_then_good():
         assert c.get("/api/state").status_code == 200      # cookie now set
 
 
+def test_logout_clears_session():
+    auth.create_user("t@x.com", "pw123")
+    with TestClient(create_app()) as c:
+        c.post("/api/login", json={"email": "t@x.com", "password": "pw123"})
+        assert c.get("/api/state").status_code == 200
+        assert c.post("/api/logout").status_code == 200
+        assert c.get("/api/state").status_code == 401
+
+
 def test_state_shape(client):
     s = client.get("/api/state").json()
     assert s["mode"] == "mock"

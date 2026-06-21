@@ -9,6 +9,8 @@ import sys
 
 if __name__ == "__main__":
     if len(sys.argv) == 1:
+        from dotenv import load_dotenv
+        load_dotenv()
         from tophat.server.app import main
         main()
     elif sys.argv[1] == "tui":

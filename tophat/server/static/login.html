@@ -4,51 +4,129 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>TopHat · Sign in</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
 <style>
-  :root{--bg:#0b0f17;--surface:#111726;--border:#222c42;--text:#e6ebf5;
-    --muted:#8b97b0;--accent:#34d399;--short:#f87171}
+  :root{
+    --bg:#0c0a09; --bg-grad-top:#15110d; --bg-grad-bottom:#0a0807;
+    --surface:#17120e; --surface-2:#211a14; --surface-3:#2a2017;
+    --border:rgba(235,180,140,.10); --border-strong:rgba(235,180,140,.20);
+    --text:#f6ede4; --muted:#b29a88; --faint:#7c6b5d;
+    --accent:#e0794f; --accent-2:#f2a35e; --accent-ink:#1c0f08;
+    --accent-dim:rgba(224,121,79,.14); --accent-glow:rgba(224,121,79,.42);
+    --short:#fb7185;
+    --radius:16px; --radius-sm:11px;
+    --shadow:0 1px 0 rgba(255,255,255,.04), 0 18px 40px -20px rgba(0,0,0,.7);
+    --shadow-glow:0 10px 32px -10px var(--accent-glow);
+    --ease:cubic-bezier(.16,1,.3,1);
+    --font:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    --display:'Space Grotesk','Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
+  }
   *{box-sizing:border-box}
-  body{margin:0;min-height:100vh;background:
-    radial-gradient(1200px 600px at 50% -10%,rgba(52,211,153,.08),transparent),var(--bg);
-    color:var(--text);font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;
-    display:grid;place-items:center}
-  .card{width:360px;background:var(--surface);border:1px solid var(--border);
-    border-radius:16px;padding:32px;box-shadow:0 24px 60px -20px rgba(0,0,0,.7)}
-  .brand{display:flex;align-items:center;gap:11px;font-weight:700;font-size:19px;
-    margin-bottom:6px;letter-spacing:-.02em}
-  .brand .dot{width:30px;height:30px;border-radius:9px;background:
-    linear-gradient(135deg,var(--accent),#22d3ee);display:grid;place-items:center;
-    color:#04130d;font-weight:800;font-size:17px}
-  .sub{color:var(--muted);font-size:13px;margin-bottom:24px}
-  label{display:block;font-size:12.5px;color:var(--muted);margin:14px 0 6px}
-  input{width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--border);
-    background:var(--bg);color:var(--text);font-size:14px}
-  input:focus{outline:none;border-color:var(--accent)}
-  button{width:100%;margin-top:22px;padding:12px;border-radius:10px;border:none;
-    background:var(--accent);color:#04130d;font-weight:700;font-size:14px;cursor:pointer}
-  button:hover{filter:brightness(1.07)}
-  .err{color:var(--short);font-size:13px;margin-top:14px;min-height:18px}
+  html,body{height:100%}
+  body{margin:0;color:var(--text);font-family:var(--font);font-size:14px;
+    -webkit-font-smoothing:antialiased;background:var(--bg);position:relative;
+    display:grid;place-items:center;padding:24px}
+
+  .bg{position:fixed;inset:0;z-index:-2;
+    background:radial-gradient(1200px 800px at 78% -8%, #1c130d 0%, transparent 55%),
+               linear-gradient(180deg, var(--bg-grad-top), var(--bg-grad-bottom));}
+  .blob{position:fixed;z-index:-1;border-radius:50%;filter:blur(70px);opacity:.5;pointer-events:none}
+  .blob.a{width:520px;height:520px;top:-160px;right:-120px;
+    background:radial-gradient(circle,rgba(224,121,79,.40),transparent 70%);animation:drift1 22s var(--ease) infinite alternate}
+  .blob.b{width:440px;height:440px;bottom:-180px;left:120px;
+    background:radial-gradient(circle,rgba(242,163,94,.22),transparent 70%);animation:drift2 28s var(--ease) infinite alternate}
+  @keyframes drift1{to{transform:translate(-60px,80px) scale(1.12)}}
+  @keyframes drift2{to{transform:translate(70px,-50px) scale(1.08)}}
+
+  .card{position:relative;width:100%;max-width:400px;
+    background:linear-gradient(180deg,var(--surface-2),var(--surface));
+    border:1px solid var(--border);border-radius:var(--radius);
+    padding:36px 32px 32px;box-shadow:var(--shadow);overflow:hidden}
+  .card::before{content:"";position:absolute;top:0;left:0;right:0;height:1px;
+    background:linear-gradient(90deg,transparent,var(--border-strong),transparent)}
+
+  .brand{display:flex;align-items:center;gap:12px;font-weight:700;font-size:19px;
+    letter-spacing:-.02em;font-family:var(--display);margin-bottom:6px}
+  .brand .dot{width:34px;height:34px;border-radius:11px;
+    background:linear-gradient(140deg,var(--accent),var(--accent-2));
+    display:grid;place-items:center;color:var(--accent-ink);
+    box-shadow:0 6px 18px -6px var(--accent-glow), inset 0 1px 0 rgba(255,255,255,.35)}
+  .brand .dot svg{width:20px;height:20px}
+  .sub{color:var(--muted);font-size:13px;margin-bottom:28px}
+
+  .field{margin-bottom:16px}
+  .field label{display:block;font-size:12.5px;color:var(--muted);margin-bottom:7px;font-weight:500}
+  .field input{width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--border-strong);
+    background:rgba(12,10,9,.6);color:var(--text);font-size:14px;font-family:var(--font);
+    transition:.18s var(--ease)}
+  .field input:focus{outline:none;border-color:var(--accent);
+    box-shadow:0 0 0 3px var(--accent-dim)}
+
+  .btn{display:flex;align-items:center;justify-content:center;gap:8px;
+    width:100%;margin-top:8px;padding:12px 17px;border-radius:var(--radius-sm);
+    border:none;background:linear-gradient(140deg,var(--accent),var(--accent-2));
+    color:var(--accent-ink);font-weight:600;font-size:14px;cursor:pointer;
+    font-family:inherit;transition:.18s var(--ease);box-shadow:var(--shadow-glow);
+    min-height:44px}
+  .btn:hover{filter:brightness(1.06);box-shadow:0 14px 36px -10px var(--accent-glow)}
+  .btn:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-dim), var(--shadow-glow)}
+  .btn:disabled{opacity:.55;cursor:not-allowed;filter:none}
+
+  .err{color:var(--short);font-size:13px;margin-top:16px;min-height:18px;text-align:center}
+
+  @media (prefers-reduced-motion:reduce){
+    *{animation:none!important;transition:none!important}
+  }
 </style>
 </head>
 <body>
-  <form class="card" id="form">
-    <div class="brand"><span class="dot">T</span> TopHat</div>
-    <div class="sub">Sign in to your trading dashboard</div>
-    <label>Email</label>
+<div class="bg"></div>
+<div class="blob a"></div><div class="blob b"></div>
+
+<form class="card" id="form">
+  <div class="brand">
+    <span class="dot">
+      <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <rect x="7.5" y="3.5" width="9" height="11.5" rx="1.6"/>
+        <rect x="3.4" y="14.4" width="17.2" height="3.3" rx="1.65"/>
+      </svg>
+    </span> TopHat
+  </div>
+  <div class="sub">Sign in to your trading dashboard</div>
+  <div class="field">
+    <label for="email">Email</label>
     <input type="email" id="email" autocomplete="username" required>
-    <label>Password</label>
+  </div>
+  <div class="field">
+    <label for="password">Password</label>
     <input type="password" id="password" autocomplete="current-password" required>
-    <button type="submit">Sign in</button>
-    <div class="err" id="err"></div>
-  </form>
+  </div>
+  <button type="submit" class="btn" id="btnSubmit">Sign in</button>
+  <div class="err" id="err" role="alert"></div>
+</form>
+
 <script>
+const btn = document.getElementById('btnSubmit');
 document.getElementById('form').onsubmit = async (e) => {
   e.preventDefault();
-  const err = document.getElementById('err'); err.textContent='';
-  const r = await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({email:email.value, password:password.value})});
-  if(r.ok){ location.href='/'; }
-  else { err.textContent = 'Invalid email or password.'; }
+  const err = document.getElementById('err');
+  err.textContent = '';
+  btn.disabled = true;
+  btn.textContent = 'Signing in…';
+  try {
+    const r = await fetch('/api/login', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({email: email.value, password: password.value})
+    });
+    if (r.ok) { location.href = '/'; }
+    else { err.textContent = 'Invalid email or password.'; }
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Sign in';
+  }
 };
 </script>
 </body>

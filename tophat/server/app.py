@@ -69,7 +69,7 @@ def create_app() -> FastAPI:
     @app.post("/api/logout")
     def logout():
         resp = JSONResponse({"ok": True})
-        resp.delete_cookie(auth.COOKIE_NAME)
+        resp.delete_cookie(auth.COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return resp
 
     @app.get("/login")
@@ -136,6 +136,8 @@ app = create_app()
 
 
 def main() -> None:
+    from dotenv import load_dotenv
+    load_dotenv()
     import uvicorn
     uvicorn.run(app, host=os.getenv("TOPHAT_HOST", "127.0.0.1"),
                 port=int(os.getenv("TOPHAT_PORT", "8800")), log_level="info")

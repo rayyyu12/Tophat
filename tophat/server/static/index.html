@@ -53,7 +53,7 @@
   @keyframes drift3{to{transform:translate(-40px,-60px) scale(1.15)}}
 
   a{color:inherit}
-  .app{display:grid;grid-template-columns:248px 1fr;min-height:100vh;min-height:100dvh}
+  .app{display:grid;grid-template-columns:248px minmax(0,1fr);min-height:100vh;min-height:100dvh;width:100%}
 
   /* ---------- Sidebar ---------- */
   .side{position:sticky;top:0;height:100vh;height:100dvh;
@@ -84,14 +84,15 @@
     font-family:var(--mono)}
 
   /* ---------- Main ---------- */
-  .main{padding:30px 36px 48px;max-width:1280px;width:100%}
+  .main{padding:30px 36px 48px;width:100%;min-width:0}
+  #page-dashboard,#page-settings{width:100%}
   .topbar{display:flex;align-items:flex-end;justify-content:space-between;margin-bottom:26px;gap:18px}
   .topbar h1{font-size:27px;margin:0;letter-spacing:-.03em;font-family:var(--display);font-weight:600}
   .topbar .sub{color:var(--muted);font-size:13px;margin-top:5px}
   .row{display:flex;gap:12px;align-items:center;flex-wrap:wrap}
 
   /* bento stat cards */
-  .cards{display:grid;grid-template-columns:repeat(4,1fr);gap:16px;margin-bottom:24px}
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
   .card{position:relative;background:linear-gradient(180deg,var(--surface-2),var(--surface));
     border:1px solid var(--border);border-radius:var(--radius);
     padding:18px 20px 20px;box-shadow:var(--shadow);overflow:hidden;
@@ -127,6 +128,7 @@
   .pill.flip{color:var(--flip);background:rgba(86,198,245,.13);border-color:rgba(86,198,245,.22)}
   .pill.eval{color:var(--warn);background:rgba(251,191,36,.13);border-color:rgba(251,191,36,.22)}
   .pill.retire{color:var(--muted);background:rgba(148,163,184,.1);border-color:rgba(148,163,184,.18)}
+  .pill.disabled{color:var(--muted);background:rgba(148,163,184,.1);border-color:rgba(148,163,184,.18)}
   .pill.passed{color:var(--long);background:rgba(74,222,128,.13);border-color:rgba(74,222,128,.32)}
   .pill.blown{color:var(--short);background:rgba(251,113,133,.13);border-color:rgba(251,113,133,.32)}
 
@@ -182,7 +184,7 @@
     background:var(--surface-2);box-shadow:none;filter:none}
 
   /* ---------- Settings ---------- */
-  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:18px}
   .sect{margin-bottom:18px}
   .sect h3{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);
     margin:0 0 14px}
@@ -312,7 +314,7 @@
         <table>
           <thead><tr>
             <th>Account</th><th>Phase</th><th>Lifecycle</th><th>Balance</th>
-            <th>Today's plan</th><th>Pos</th><th style="text-align:right">Enabled</th>
+            <th>Today's plan</th><th>Position</th><th style="text-align:right">Enabled</th>
           </tr></thead>
           <tbody id="acctBody"></tbody>
         </table>
@@ -352,8 +354,18 @@ async function jfetch(url, opts){
   if(r.status===401){ location.href='/login'; throw new Error('unauthorized'); }
   return r;
 }
+// router (page nav only — sign-out is separate)
+document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
+  document.querySelectorAll('.nav[data-page]').forEach(x=>x.classList.remove('active'));
+  n.classList.add('active');
+  const p=n.dataset.page;
+  $('#page-dashboard').classList.toggle('hidden',p!=='dashboard');
+  $('#page-settings').classList.toggle('hidden',p!=='settings');
+  if(p==='settings') loadSettings();
+});
 $('#btnLogout').onclick = async () => {
-  await fetch('/api/logout',{method:'POST'}); location.href='/login';
+  await fetch('/api/logout',{method:'POST'});
+  location.href='/login';
 };
 async function markPaid(id){
   if(!confirm('Confirm you have withdrawn this payout? This advances the account to its next cycle.')) return;
@@ -370,25 +382,41 @@ async function pollAuto(){
   }catch(e){}
 }
 
-// router
-document.querySelectorAll('.nav').forEach(n=>n.onclick=()=>{
-  document.querySelectorAll('.nav').forEach(x=>x.classList.remove('active'));
-  n.classList.add('active');
-  const p=n.dataset.page;
-  $('#page-dashboard').classList.toggle('hidden',p!=='dashboard');
-  $('#page-settings').classList.toggle('hidden',p!=='settings');
-  if(p==='settings') loadSettings();
-});
-
 function planPill(a){
   const act=(a.plan_action||'').toLowerCase();
   const side=a.plan_side&&a.plan_side!=='FLAT'?` ${a.plan_side}`:'';
   const t=a.plan_entry?` · ${a.plan_entry}`:'';
-  const cls=['nuke','renuke','flip','eval','idle','retire','passed','blown'].includes(act)?act:'idle';
+  const cls=['nuke','renuke','flip','eval','idle','retire','passed','blown','disabled'].includes(act)?act:'idle';
   let label=act.toUpperCase();
   if(['nuke','renuke','flip','eval'].includes(act)) label+=side+(a.plan_contracts?` ×${a.plan_contracts}`:'')+t;
   return `<span class="pill ${cls}">${label}</span>`;
 }
+function planCellHtml(a){
+  return `${planPill(a)}<div class="muted" style="margin-top:4px;font-size:11.5px">${a.plan_note||''}</div>`;
+}
+function accountForDisplay(a){
+  const enabled = pendingToggle.has(a.account_id) ? pendingToggle.get(a.account_id) : a.enabled;
+  if(enabled === a.enabled) return a;
+  if(!enabled){
+    return {...a, enabled:false, plan_action:'disabled', plan_side:'', plan_entry:'',
+      plan_contracts:0, plan_note:''};
+  }
+  const p = a.plan_preview || a;
+  return {...a, enabled:true, plan_action:p.plan_action, plan_side:p.plan_side,
+    plan_entry:p.plan_entry, plan_contracts:p.plan_contracts, plan_note:p.plan_note};
+}
+function applyPlanCell(tr, a){
+  const cell = tr.querySelector('.plan-cell');
+  if(cell) cell.innerHTML = planCellHtml(a);
+}
+
+function rowShouldDim(enabled, phase){
+  return !enabled && !['passed','blown'].includes(phase);
+}
+function applyRowDim(tr, enabled, phase){
+  tr.classList.toggle('dim', rowShouldDim(enabled, phase));
+}
+const pendingToggle = new Map();
 
 function render(s){
   $('#asOf').textContent = `${s.as_of} · ${s.counts.total} accounts · drive from ${s.drive_source}`;
@@ -404,7 +432,12 @@ function render(s){
   const body=$('#acctBody'); body.innerHTML='';
   for(const a of s.accounts){
     const tr=document.createElement('tr');
-    if(!a.enabled && !['passed','blown'].includes(a.phase)) tr.classList.add('dim');
+    tr.dataset.phase = a.phase;
+    tr.dataset.aid = String(a.account_id);
+    tr.dataset.account = JSON.stringify(a);
+    const view = accountForDisplay(a);
+    const enabled = view.enabled;
+    if(rowShouldDim(enabled, a.phase)) tr.classList.add('dim');
     if(a.phase==='passed') tr.classList.add('row-passed');
     if(a.phase==='blown') tr.classList.add('row-blown');
     const phaseCls = {funded:'flip',eval:'eval',passed:'passed',blown:'blown'}[a.phase]||'retire';
@@ -417,17 +450,39 @@ function render(s){
       <td><span class="pill ${phaseCls}">${a.phase}</span></td>
       <td class="muted">${a.lifecycle}${a.payout_ready?' · <b style="color:var(--accent)">payout ready</b>':''}${pend}</td>
       <td class="mono">${fmtUsd(a.balance)}</td>
-      <td>${planPill(a)}<div class="muted" style="margin-top:4px;font-size:11.5px">${a.plan_note||''}</div></td>
+      <td class="plan-cell">${planCellHtml(view)}</td>
       <td class="mono ${a.open_position?'':'muted'}">${a.open_position||'–'}</td>
-      <td style="text-align:right;white-space:nowrap">${payBtn}<label class="sw"><input type="checkbox" ${a.enabled?'checked':''}
-        onchange="toggleAcct(${a.account_id})"><span class="track"></span><span class="thumb"></span></label></td>`;
+      <td style="text-align:right;white-space:nowrap">${payBtn}<label class="sw"><input type="checkbox" ${enabled?'checked':''}
+        onchange="toggleAcct(${a.account_id}, this)"><span class="track"></span><span class="thumb"></span></label></td>`;
     body.appendChild(tr);
   }
 }
 
-async function toggleAcct(id){
-  await jfetch(`/api/accounts/${id}/toggle`,{method:'POST'});
-  refresh();
+async function toggleAcct(id, el){
+  const tr = el.closest('tr');
+  const phase = tr.dataset.phase || '';
+  const base = JSON.parse(tr.dataset.account || '{}');
+  const next = el.checked;
+  pendingToggle.set(id, next);
+  applyRowDim(tr, next, phase);
+  applyPlanCell(tr, accountForDisplay(base));
+  el.disabled = true;
+  try {
+    const r = await (await jfetch(`/api/accounts/${id}/toggle`,{method:'POST'})).json();
+    pendingToggle.set(id, r.enabled);
+    applyRowDim(tr, r.enabled, phase);
+    el.checked = r.enabled;
+    applyPlanCell(tr, accountForDisplay(base));
+    await refresh();
+  } catch(e) {
+    pendingToggle.delete(id);
+    el.checked = !next;
+    applyRowDim(tr, el.checked, phase);
+    applyPlanCell(tr, accountForDisplay(base));
+  } finally {
+    pendingToggle.delete(id);
+    el.disabled = false;
+  }
 }
 async function refresh(){
   const s=await (await jfetch('/api/state')).json(); render(s); pollAuto();

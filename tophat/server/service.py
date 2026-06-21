@@ -65,18 +65,24 @@ def build_snapshot(broker, *, mode: str) -> dict:
 
     accounts = broker.list_accounts()
 
-    # transient state per account (don't persist on a read)
+    # Enabled accounts drive today's assignments; all tradeable accounts get a plan preview
+    # so the UI can show the would-be plan instantly when toggling enable on.
     tradeable_states = {}
+    tradeable_all = {}
     for a in accounts:
         is_new = a.account_id not in states
         st = get_or_create(states, a.account_id)
         if is_new:
             _init_state(st, cfg, a)
+        if a.can_trade and st.phase not in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
+            tradeable_all[a.account_id] = st
         if registry.is_enabled(a.account_id) and a.can_trade and st.phase not in (
                 Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
             tradeable_states[a.account_id] = st
 
-    assignments, _ = assign_day(tradeable_states, settings, today, load_schedule())
+    sched = load_schedule()
+    assignments, _ = assign_day(tradeable_states, settings, today, sched)
+    preview_assignments, _ = assign_day(tradeable_all, settings, today, sched)
 
     rows = []
     n_funded = n_eval = n_disabled = 0
@@ -91,10 +97,26 @@ def build_snapshot(broker, *, mode: str) -> dict:
         elif st.phase == Phase.FUNDED:
             n_funded += 1
         asg = assignments.get(a.account_id)
+        preview = preview_assignments.get(a.account_id)
         dec = decide(cfg, st, drive)
         terminal = st.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED)
-        plan_action = (st.phase.value if terminal
-                       else (asg.action if asg else ("disabled" if not enabled else dec.action.value)))
+        preview_action = (st.phase.value if terminal
+                          else (preview.action if preview else dec.action.value))
+        preview_side = _side(dec.plan.direction) if dec.plan and not terminal else ""
+        preview_entry = preview.entry_time if preview else ""
+        preview_contracts = dec.plan.contracts if dec.plan else 0
+        preview_note = preview.note if preview else dec.note
+        if enabled or terminal:
+            plan_action = (st.phase.value if terminal
+                           else (asg.action if asg else dec.action.value))
+            plan_side = preview_side
+            plan_entry = asg.entry_time if asg else ""
+            plan_contracts = preview_contracts
+            plan_note = asg.note if asg else dec.note
+        else:
+            plan_action = "disabled"
+            plan_side = plan_entry = plan_note = ""
+            plan_contracts = 0
         pos = sum(int(p.get("size", 0)) for p in broker.search_open_positions(a.account_id))
         rows.append({
             "account_id": a.account_id,
@@ -110,10 +132,17 @@ def build_snapshot(broker, *, mode: str) -> dict:
             "payouts": st.payouts_taken,
             "open_position": pos,
             "plan_action": plan_action,
-            "plan_side": _side(dec.plan.direction) if dec.plan and not terminal else "",
-            "plan_entry": asg.entry_time if asg else "",
-            "plan_contracts": dec.plan.contracts if dec.plan else 0,
-            "plan_note": asg.note if asg else dec.note,
+            "plan_side": plan_side,
+            "plan_entry": plan_entry,
+            "plan_contracts": plan_contracts,
+            "plan_note": plan_note,
+            "plan_preview": {
+                "plan_action": preview_action,
+                "plan_side": preview_side,
+                "plan_entry": preview_entry,
+                "plan_contracts": preview_contracts,
+                "plan_note": preview_note,
+            },
             "payout_ready": st.payout_ready,
             "pending": st.pending_label,
         })
