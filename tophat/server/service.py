@@ -9,11 +9,12 @@ from __future__ import annotations
 import copy
 import os
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from tophat.broker.mock import MockBroker
-from tophat.engine import Action, Phase, account_base, decide
+from tophat.engine import Action, Phase, account_base, decide, is_nuke_cycle
 from tophat.services.guards import position_guard
 from tophat.services.lifecycle import mark_payout_taken, reconcile, record_pending
 from tophat.services.scheduler import assign_day, load_schedule, save_schedule
@@ -27,17 +28,31 @@ ET = ZoneInfo("America/New_York")
 # Short-TTL snapshot cache so the 3s WebSocket push doesn't hammer the broker
 # (one live snapshot = list_accounts + drive + positions×N). The UI still updates
 # every WS tick; the broker is only re-read when the cache goes stale or a
-# mutation (toggle / lifecycle / payout / manual run) invalidates it.
+# mutation (toggle / lifecycle / payout / manual run) invalidates it. Keyed per
+# owner so each API key's snapshot caches independently.
 SNAPSHOT_TTL = float(os.getenv("TOPHAT_SNAPSHOT_TTL", "12"))
-_SNAPSHOT_CACHE: dict = {"ts": 0.0, "data": None, "mode": None}
+_SNAPSHOT_CACHE: dict[str, dict] = {}
 # Drive (09:30–09:45 opening range) is stable once computed for the session.
 _DRIVE_CACHE: dict = {"date": "", "value": None, "src": ""}
 
 
-def invalidate_snapshot_cache() -> None:
-    """Force the next build_snapshot to re-read the broker (call after mutations)."""
-    _SNAPSHOT_CACHE["ts"] = 0.0
-    _SNAPSHOT_CACHE["data"] = None
+@dataclass
+class BrokerHandle:
+    """One credential's broker plus the username that owns it (its dashboard table)."""
+    owner: str
+    broker: object | None
+    mode: str
+    error: str = ""
+
+
+def invalidate_snapshot_cache(key: str | None = None) -> None:
+    """Force the next build_snapshot to re-read the broker (call after mutations).
+
+    `key=None` clears every owner's cache; a specific key clears just that owner."""
+    if key is None:
+        _SNAPSHOT_CACHE.clear()
+    else:
+        _SNAPSHOT_CACHE.pop(key, None)
 
 
 def make_broker():
@@ -48,6 +63,36 @@ def make_broker():
         b.login()
         return b, "live"
     return MockBroker(), "mock"
+
+
+def build_broker_pool() -> list[BrokerHandle]:
+    """One broker per stored API credential; fall back to the env/mock broker.
+
+    Each credential gets its own broker instance and its own dashboard table, so
+    every per-account rule (one nuke/day, eval cap) applies independently per user
+    — the scheduler only ever sees one owner's accounts at a time. A credential
+    that fails to log in becomes an error handle rather than crashing the fleet.
+    """
+    from tophat.store.credentials import load_credentials
+    creds = [c for c in load_credentials() if c.enabled]
+    if creds:
+        from tophat.broker.projectx.broker import ProjectXBroker
+        from tophat.broker.projectx.client import ProjectXClient
+        handles: list[BrokerHandle] = []
+        for c in creds:
+            try:
+                client = ProjectXClient(c.username, c.api_key, base_url=c.base_url or None)
+                broker = ProjectXBroker(client)
+                broker.login()
+                handles.append(BrokerHandle(owner=c.username, broker=broker, mode="live"))
+            except Exception as exc:
+                handles.append(BrokerHandle(owner=c.username, broker=None,
+                                            mode="live", error=str(exc)))
+        return handles
+    # No stored credentials: keep the single env/mock broker working as before.
+    broker, mode = make_broker()
+    owner = (os.getenv("PROJECTX_USERNAME", "") if mode == "live" else "Demo") or "Account"
+    return [BrokerHandle(owner=owner, broker=broker, mode=mode)]
 
 
 def _drive(broker, nq: str) -> tuple[int, str]:
@@ -85,20 +130,23 @@ def _init_state(st, cfg, account) -> None:
     st.peak_equity_eod = max(account.balance, st.base_balance)
 
 
-def build_snapshot(broker, *, mode: str, force: bool = False) -> dict:
-    """Cached snapshot. Serves a recent build unless stale or `force`d, so the
-    3s WS push and frequent /api/state calls don't each hit the live broker."""
+def build_snapshot(broker, *, mode: str, force: bool = False,
+                   key: str | None = None, owner: str = "") -> dict:
+    """Cached snapshot for one broker. Serves a recent build unless stale or
+    `force`d, so the 3s WS push and frequent /api/state calls don't each hit the
+    live broker. `key` (default `mode`) scopes the cache per owner."""
     now = time.monotonic()
-    c = _SNAPSHOT_CACHE
-    if (not force and c["data"] is not None and c["mode"] == mode
+    ck = key or mode
+    c = _SNAPSHOT_CACHE.get(ck)
+    if (not force and c is not None and c["mode"] == mode
             and now - c["ts"] < SNAPSHOT_TTL):
         return c["data"]
-    snap = _build_snapshot(broker, mode=mode)
-    c.update(ts=now, data=snap, mode=mode)
+    snap = _build_snapshot(broker, mode=mode, owner=owner)
+    _SNAPSHOT_CACHE[ck] = {"ts": now, "data": snap, "mode": mode}
     return snap
 
 
-def _build_snapshot(broker, *, mode: str) -> dict:
+def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
     settings = load_settings()
     cfg = settings.to_account_config()
     registry = load_registry()
@@ -162,6 +210,17 @@ def _build_snapshot(broker, *, mode: str) -> dict:
         # Status reflects the real operational state (decoupled from program phase):
         # terminal phases surface as blown/passed/retired; otherwise active/inactive.
         status = st.phase.value if terminal else ("active" if tradeable else "inactive")
+        # slot_kind: does this account compete for a (capped) eval or nuke slot? Lets the
+        # UI apply the cap instantly on toggle (flips don't compete — they always run).
+        if terminal or payout_ready or not tradeable:
+            slot_kind = None
+        elif st.phase == Phase.EVAL:
+            slot_kind = "eval"
+        elif (st.phase == Phase.FUNDED and is_nuke_cycle(st.payouts_taken)
+              and not st.nuke_hit_this_cycle):
+            slot_kind = "nuke"
+        else:
+            slot_kind = None
         if terminal:
             preview_action = st.phase.value
         elif payout_ready:
@@ -203,6 +262,7 @@ def _build_snapshot(broker, *, mode: str) -> dict:
         pos = sum(int(p.get("size", 0)) for p in broker.search_open_positions(a.account_id))
         rows.append({
             "account_id": a.account_id,
+            "owner": owner,
             "name": entry.alias or a.name,
             "broker_name": a.name,
             "enabled": enabled,
@@ -212,6 +272,7 @@ def _build_snapshot(broker, *, mode: str) -> dict:
             "trading_status": "active" if tradeable else "inactive",
             "status": status,
             "terminal": terminal,
+            "slot_kind": slot_kind,
             "simulated": a.simulated,
             "phase": st.phase.value,
             # Program type (eval/funded) for the Phase column — stays eval/funded
@@ -243,6 +304,7 @@ def _build_snapshot(broker, *, mode: str) -> dict:
     rows.sort(key=lambda r: (r["phase"] != "funded", r["name"]))
     return {
         "mode": mode,
+        "owner": owner,
         "nq_contract": nq,
         "drive": _side(drive),
         "drive_source": drive_src,
@@ -251,8 +313,129 @@ def _build_snapshot(broker, *, mode: str) -> dict:
         "counts": {"total": len(accounts), "funded": n_funded, "eval": n_eval, "disabled": n_disabled},
         "auto_execute": settings.auto_execute,
         "max_evals_per_day": settings.max_evals_per_day,
+        "max_nukes_per_day": settings.max_nukes_per_day,
         "accounts": rows,
     }
+
+
+def _empty_counts() -> dict:
+    return {"total": 0, "funded": 0, "eval": 0, "disabled": 0}
+
+
+def build_dashboard(pool: list[BrokerHandle], *, force: bool = False) -> dict:
+    """Aggregate every credential's snapshot into the dashboard payload.
+
+    `groups` holds one per-owner table (username + that key's accounts); `accounts`
+    is the flat union across all owners (kept for the stat cards and back-compat).
+    """
+    settings = load_settings()
+    groups: list[dict] = []
+    all_rows: list[dict] = []
+    totals = _empty_counts()
+    drive = "FLAT"
+    drive_src = ""
+    nq = ""
+    any_live = False
+
+    for h in pool:
+        if h.mode == "live":
+            any_live = True
+        if h.broker is None:
+            groups.append({"owner": h.owner, "mode": h.mode,
+                           "error": h.error or "unavailable",
+                           "accounts": [], "counts": _empty_counts()})
+            continue
+        try:
+            snap = build_snapshot(h.broker, mode=h.mode, force=force,
+                                  key=h.owner, owner=h.owner)
+        except Exception as exc:                       # one bad broker ≠ dead dashboard
+            groups.append({"owner": h.owner, "mode": h.mode, "error": str(exc),
+                           "accounts": [], "counts": _empty_counts()})
+            continue
+        groups.append({
+            "owner": h.owner, "mode": h.mode, "error": "",
+            "accounts": snap["accounts"], "counts": snap["counts"],
+            "drive": snap["drive"], "drive_source": snap["drive_source"],
+            "nq_contract": snap["nq_contract"],
+        })
+        all_rows.extend(snap["accounts"])
+        for k in totals:
+            totals[k] += snap["counts"][k]
+        if not drive_src:                              # drive is market-wide; take the first
+            drive, drive_src, nq = snap["drive"], snap["drive_source"], snap["nq_contract"]
+
+    return {
+        "mode": "live" if any_live else "mock",
+        "groups": groups,
+        "accounts": all_rows,
+        "counts": totals,
+        "nq_contract": nq,
+        "drive": drive,
+        "drive_source": drive_src,
+        "as_of": datetime.now(ET).strftime("%Y-%m-%d %H:%M:%S ET"),
+        "as_of_iso": datetime.now(ET).isoformat(),
+        "auto_execute": settings.auto_execute,
+        "max_evals_per_day": settings.max_evals_per_day,
+        "max_nukes_per_day": settings.max_nukes_per_day,
+    }
+
+
+def run_all_sessions(pool: list[BrokerHandle], *, execute: bool,
+                     respect_times: bool = False, now_et: datetime | None = None,
+                     manual: bool = False) -> dict:
+    """Run today's plan for every credential's broker, independently, then merge.
+
+    Each broker's `run_session` assigns slots over only its own accounts, so the
+    decorrelation caps (one nuke/day, eval cap) are scoped per user, not per fleet.
+    """
+    executed = False
+    placed = 0
+    reconciled: list[dict] = []
+    results: list[dict] = []
+    groups: list[dict] = []
+    drive = "FLAT"
+    drive_src = ""
+
+    for h in pool:
+        if h.broker is None:
+            groups.append({"owner": h.owner, "error": h.error or "unavailable",
+                           "results": [], "orders_placed": 0})
+            continue
+        r = run_session(h.broker, execute=execute, respect_times=respect_times,
+                        now_et=now_et, manual=manual)
+        executed = executed or r["executed"]
+        placed += r["orders_placed"]
+        for x in r["reconciled"]:
+            reconciled.append({**x, "owner": h.owner})
+        for x in r["results"]:
+            x["owner"] = h.owner
+            results.append(x)
+        if not drive_src:
+            drive, drive_src = r["drive"], r["drive_source"]
+        groups.append({"owner": h.owner, "results": r["results"],
+                       "orders_placed": r["orders_placed"]})
+
+    return {
+        "executed": executed,
+        "orders_placed": placed,
+        "drive": drive,
+        "drive_source": drive_src,
+        "reconciled": reconciled,
+        "results": results,
+        "groups": groups,
+    }
+
+
+def find_handle_for_account(pool: list[BrokerHandle], account_id: int) -> BrokerHandle | None:
+    for h in pool:
+        if h.broker is None:
+            continue
+        try:
+            if any(a.account_id == account_id for a in h.broker.list_accounts()):
+                return h
+        except Exception:
+            continue
+    return None
 
 
 def toggle_account(account_id: int) -> bool:
@@ -412,35 +595,44 @@ _LIFECYCLE_FIELDS = {
 _REGISTRY_FIELDS = {"alias", "notes", "enabled", "force_inactive"}
 
 
-def list_accounts_detail(broker, *, mode: str) -> list[dict]:
-    """Full account rows for the edit-accounts page."""
-    snap = build_snapshot(broker, mode=mode)
+def list_accounts_detail(pool: list[BrokerHandle]) -> list[dict]:
+    """Full account rows for the edit-accounts page, unioned across every credential."""
+    # Build snapshots first — that's what creates+persists state for new accounts —
+    # then read states so freshly discovered accounts are present.
+    snaps = [(h, build_snapshot(h.broker, mode=h.mode, key=h.owner, owner=h.owner))
+             for h in pool if h.broker is not None]
     states = load_all()
     registry = load_registry()
     cfg = load_settings().to_account_config()
-    by_id = {r["account_id"]: r for r in snap["accounts"]}
     out = []
-    for a in broker.list_accounts():
-        row = by_id.get(a.account_id)
-        if not row:
-            continue
-        st = states[a.account_id]
-        entry = registry.entry(a.account_id)
-        tradeable = _effective_can_trade(a.can_trade, entry)
-        out.append({
-            **row,
-            "alias": entry.alias,
-            "notes": entry.notes,
-            "force_inactive": entry.force_inactive,
-            "lifecycle": lifecycle_label(cfg, st, can_trade=tradeable),
-            "state": state_to_dict(st),
-        })
-    out.sort(key=lambda r: (r["phase"] != "funded", r["name"]))
+    for h, snap in snaps:
+        by_id = {r["account_id"]: r for r in snap["accounts"]}
+        for a in h.broker.list_accounts():
+            row = by_id.get(a.account_id)
+            if not row:
+                continue
+            st = states[a.account_id]
+            entry = registry.entry(a.account_id)
+            tradeable = _effective_can_trade(a.can_trade, entry)
+            out.append({
+                **row,
+                "owner": h.owner,
+                "alias": entry.alias,
+                "notes": entry.notes,
+                "force_inactive": entry.force_inactive,
+                "lifecycle": lifecycle_label(cfg, st, can_trade=tradeable),
+                "state": state_to_dict(st),
+            })
+    out.sort(key=lambda r: (r["owner"], r["phase"] != "funded", r["name"]))
     return out
 
 
-def update_account_lifecycle(account_id: int, patch: dict, broker) -> dict:
+def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHandle]) -> dict:
     """Patch lifecycle state and registry fields for one account."""
+    handle = find_handle_for_account(pool, account_id)
+    if handle is None:
+        return {"account_id": account_id, "error": "unknown account"}
+    broker = handle.broker
     accounts = {a.account_id: a for a in broker.list_accounts()}
     if account_id not in accounts:
         return {"account_id": account_id, "error": "unknown account"}

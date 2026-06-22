@@ -149,6 +149,39 @@ def test_manual_execute_fires_while_disarmed(client):
     assert manual["executed"] is True               # explicit operator action
 
 
+def test_credentials_crud_and_masking(client, monkeypatch):
+    """Add/reveal/delete keys; list responses are masked, reveal returns the raw key."""
+    from tophat.broker.mock import MockBroker
+    from tophat.server import service
+    # Adding a key rebuilds the broker pool; keep that hermetic (no live login).
+    monkeypatch.setattr(service, "build_broker_pool",
+                        lambda: [service.BrokerHandle("alice", MockBroker(), "mock")])
+
+    assert client.get("/api/credentials").json() == []
+
+    out = client.post("/api/credentials",
+                      json={"username": "alice", "api_key": "SECRET-KEY-1234"}).json()
+    assert out[0]["username"] == "alice"
+    assert "api_key" not in out[0]                  # never the raw key in the list
+    assert set(out[0]["masked"]) <= {"•"}           # fully masked, no raw chars
+
+    rev = client.post("/api/credentials/alice/reveal").json()
+    assert rev["api_key"] == "SECRET-KEY-1234"      # reveal is the only raw path
+
+    assert client.delete("/api/credentials/alice").json() == []
+
+
+def test_credentials_validation(client):
+    r = client.post("/api/credentials", json={"username": "x", "api_key": ""})
+    assert r.status_code == 400
+
+
+def test_state_rows_carry_owner(client):
+    s = client.get("/api/state").json()
+    assert "groups" in s and s["groups"]
+    assert all("owner" in a for a in s["accounts"])
+
+
 def test_snapshot_cache_hits_and_invalidates(monkeypatch):
     """With a positive TTL, build_snapshot serves a cached object until invalidated."""
     from tophat.broker.mock import MockBroker

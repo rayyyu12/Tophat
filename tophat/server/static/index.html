@@ -209,6 +209,32 @@
     box-shadow:0 0 0 3px var(--accent-dim)}
   .field .hint{font-size:11.5px;color:var(--faint);margin-top:5px}
 
+  /* ---------- API keys ---------- */
+  .apikey-list{display:flex;flex-direction:column;gap:12px;margin-bottom:18px}
+  .apikey-card{display:flex;align-items:center;gap:14px;padding:14px 16px;
+    border-radius:var(--radius-sm);border:1px solid var(--border-strong);
+    background:rgba(12,10,9,.5);transition:border-color .18s var(--ease)}
+  .apikey-card:hover{border-color:var(--accent)}
+  .apikey-card .who{min-width:0}
+  .apikey-card .who .u{font-weight:600;font-family:var(--display);font-size:14.5px}
+  .apikey-card .who .meta{color:var(--faint);font-size:11.5px;margin-top:2px}
+  .apikey-card .keybox{margin-left:auto;display:flex;align-items:center;gap:8px;min-width:0}
+  .apikey-card .keyval{font-family:var(--mono);font-size:13px;color:var(--muted);
+    letter-spacing:.06em;user-select:all;word-break:break-all}
+  .iconbtn{flex:none;display:grid;place-items:center;width:32px;height:32px;border-radius:9px;
+    border:1px solid var(--border-strong);background:var(--surface-2);color:var(--muted);
+    cursor:pointer;transition:.16s var(--ease)}
+  .iconbtn:hover{border-color:var(--accent);color:var(--accent);transform:translateY(-1px)}
+  .iconbtn:active{transform:scale(.9)}
+  .iconbtn svg{width:16px;height:16px}
+  .iconbtn.danger:hover{border-color:var(--short);color:var(--short)}
+  .apikey-add{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .apikey-add input{flex:1;min-width:170px;padding:10px 13px;border-radius:10px;
+    border:1px solid var(--border-strong);background:rgba(12,10,9,.6);color:var(--text);
+    font-family:var(--mono);font-size:13px;transition:.18s var(--ease)}
+  .apikey-add input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+  .apikey-add .btn{flex:none}
+
   /* ---------- Accounts editor ---------- */
   .acct-pick{width:100%;max-width:420px;padding:10px 38px 10px 13px;border-radius:10px;
     border:1px solid var(--border-strong);background:rgba(12,10,9,.6);color:var(--text);
@@ -388,19 +414,9 @@
           <div class="v sm" id="cDrive">–</div>
         </div>
       </div>
-      <div class="panel">
-        <div class="head"><h2>Accounts</h2><span class="muted mono" id="nqLabel"></span></div>
-        <div class="tablewrap">
-        <table>
-          <thead><tr>
-            <th>Account</th><th>Status</th><th>Phase</th><th>Lifecycle</th><th>Balance</th>
-            <th>Today's plan</th><th>Position</th><th>Enabled</th>
-          </tr></thead>
-          <tbody id="acctBody"></tbody>
-        </table>
-        </div>
-        <div class="table-foot hidden" id="hiddenFoot"></div>
-        <div class="results hidden" id="runResults"></div>
+      <div id="acctGroups"></div>
+      <div class="panel hidden" id="resultsPanel" style="margin-top:18px">
+        <div class="results" id="runResults"></div>
       </div>
     </section>
 
@@ -477,6 +493,19 @@
       <div class="topbar">
         <div><h1>Settings</h1><div class="sub">Strategy & automation parameters · persisted to <span class="mono">data/settings.json</span></div></div>
         <button class="btn primary" id="btnSave">Save settings</button>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Project X API keys</h2>
+          <span class="muted">Encrypted at rest · one key per username</span></div>
+        <div class="body" style="padding:18px 22px">
+          <div id="apiKeyList" class="apikey-list"></div>
+          <div class="apikey-add">
+            <input id="newApiUser" placeholder="ProjectX username" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <input id="newApiKey" placeholder="API key" autocomplete="off" autocapitalize="off" spellcheck="false">
+            <button class="btn primary" id="btnAddKey">Add API key</button>
+          </div>
+          <div class="hint" style="margin-top:12px">Each username's accounts get their own dashboard table and run their own daily rules (one nuke/day per user).</div>
+        </div>
       </div>
       <div class="grid2">
         <div class="panel"><div class="head"><h2>Account & risk</h2></div><div style="padding:18px 22px" id="secAccount"></div></div>
@@ -584,7 +613,7 @@ document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
   $('#page-dashboard').classList.toggle('hidden',p!=='dashboard');
   $('#page-accounts').classList.toggle('hidden',p!=='accounts');
   $('#page-settings').classList.toggle('hidden',p!=='settings');
-  if(p==='settings') loadSettings();
+  if(p==='settings'){ loadSettings(); loadCredentials(); }
   if(p==='accounts') loadAccountsPage();
 });
 $('#btnLogout').onclick = async () => {
@@ -662,21 +691,31 @@ function applyRowDim(tr, enabled, phase){
 const pendingToggle = new Map();
 let LAST_SNAP = null;
 
-// Optimistic plan for a row mid-toggle: cap-aware for evals so enabling a 3rd eval
-// shows it "waiting" instantly (matches the backend's enabled-order tiebreaker) —
-// no 1s flicker waiting for the server to recompute the slots.
+// Optimistic plan for a row mid-toggle: cap-aware for the capped eval/nuke slots so
+// enabling an over-cap account shows it "waiting" instantly (matches the backend's
+// enabled-order tiebreaker) — no flicker waiting for the server to recompute slots.
+const SLOT_CFG = {
+  eval: {capKey:'max_evals_per_day', dflt:2, actions:['eval'],          note:'waiting for an eval slot'},
+  nuke: {capKey:'max_nukes_per_day', dflt:1, actions:['nuke','renuke'], note:'waiting for a nuke slot'},
+};
+function effEnabled(a){
+  return pendingToggle.has(a.account_id) ? pendingToggle.get(a.account_id) : a.enabled;
+}
 function optimisticView(base){
   const view = accountForDisplay(base);
-  if(base.program!=='eval' || base.terminal || !base.can_trade || base.payout_ready) return view;
-  const enabledNext = pendingToggle.has(base.account_id) ? pendingToggle.get(base.account_id) : base.enabled;
-  if(!enabledNext) return view;
-  const cap = (LAST_SNAP && LAST_SNAP.max_evals_per_day) || 2;
+  const kind = base.slot_kind;
+  if(!kind || !SLOT_CFG[kind] || !effEnabled(base)) return view;
+  const cfg = SLOT_CFG[kind];
+  const cap = (LAST_SNAP && LAST_SNAP[cfg.capKey]) || cfg.dflt;
+  // Caps are per owner (each API key nukes/evals independently), so only count
+  // competing accounts under the same username.
   const slotted = ((LAST_SNAP && LAST_SNAP.accounts) || []).filter(a =>
-      a.account_id !== base.account_id && a.program==='eval' && a.plan_action==='eval'
-      && (pendingToggle.has(a.account_id) ? pendingToggle.get(a.account_id) : a.enabled)).length;
+      a.account_id !== base.account_id && a.slot_kind === kind
+      && a.owner === base.owner
+      && cfg.actions.includes(a.plan_action) && effEnabled(a)).length;
   if(slotted >= cap)
     return {...view, plan_action:'idle', plan_side:'', plan_entry:'', plan_contracts:0,
-            plan_note:'waiting for an eval slot'};
+            plan_note:cfg.note};
   return view;
 }
 
@@ -713,29 +752,41 @@ function buildRow(a){
   return tr;
 }
 
-function render(s){
-  LAST_SNAP = s;
-  $('#asOf').textContent = `${fmtAsOf(s.as_of_iso, s.as_of)} · ${s.counts.total} accounts · drive from ${s.drive_source}`;
-  $('#modeLabel').textContent = s.mode;
-  $('#cTotal').textContent = s.counts.total;
-  $('#cFunded').textContent = s.counts.funded;
-  $('#cEval').textContent = s.counts.eval;
-  const d=(s.drive||'FLAT').toLowerCase();
-  $('#cDrive').innerHTML = `<span class="pill ${d}">${s.drive}</span>`;
-  $('#nqLabel').textContent = s.nq_contract;
-  // Manual Execute is for hands-on firing while disarmed; when automation is armed
-  // the scheduler fires on its own, so hide it to avoid confusing double-fires.
-  $('#btnExecute').style.display = s.auto_execute ? 'none' : '';
-  $('#btnExecute').title = 'Place live orders for today\'s plan now';
+const THEAD = `<thead><tr>
+  <th>Account</th><th>Status</th><th>Phase</th><th>Lifecycle</th><th>Balance</th>
+  <th>Today's plan</th><th>Position</th><th>Enabled</th>
+</tr></thead>`;
 
+// One dashboard table per credential/username. Each owner's accounts live in
+// their own panel, titled with the username — rules are scoped per owner.
+function buildGroupPanel(g){
+  const panel = document.createElement('div');
+  panel.className = 'panel';
+  panel.style.marginBottom = '18px';
+  const title = g.owner || 'Account';
+  if(g.error){
+    panel.innerHTML = `<div class="head"><h2>${title}</h2>
+      <span class="pill short">unavailable</span></div>
+      <div style="padding:18px 22px" class="muted">${g.error}</div>`;
+    return panel;
+  }
+  const c = g.counts || {total:0};
+  const meta = [`${c.total} account${c.total===1?'':'s'}`, g.nq_contract].filter(Boolean).join(' · ');
+  panel.innerHTML = `<div class="head"><h2>${title}</h2>
+      <span class="muted mono">${meta}</span></div>
+    <div class="tablewrap"><table>${THEAD}<tbody></tbody></table></div>
+    <div class="table-foot hidden"></div>`;
+  const body = panel.querySelector('tbody');
   const active=[], terminal=[];
-  for(const a of s.accounts){ (a.terminal?terminal:active).push(a); }
-  const body=$('#acctBody'); body.innerHTML='';
-  for(const a of active) body.appendChild(buildRow(a));
-  if(showHidden) for(const a of terminal) body.appendChild(buildRow(a));
-
-  // "N hidden — show / hide" control for blown/retired/passed accounts
-  const foot=$('#hiddenFoot');
+  for(const a of (g.accounts||[])){ (a.terminal?terminal:active).push(a); }
+  if(!active.length && !(showHidden && terminal.length)){
+    body.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center">
+      ${terminal.length ? 'no active accounts' : 'no accounts'}</td></tr>`;
+  } else {
+    for(const a of active) body.appendChild(buildRow(a));
+    if(showHidden) for(const a of terminal) body.appendChild(buildRow(a));
+  }
+  const foot = panel.querySelector('.table-foot');
   if(terminal.length){
     foot.classList.remove('hidden');
     const n=terminal.length;
@@ -744,9 +795,35 @@ function render(s){
          <button class="linkbtn" onclick="toggleHidden()">hide</button>`
       : `<span>${n} closed account${n>1?'s':''} hidden</span>
          <button class="linkbtn" onclick="toggleHidden()">show</button>`;
-  } else {
-    foot.classList.add('hidden');
   }
+  return panel;
+}
+
+function render(s){
+  LAST_SNAP = s;
+  $('#asOf').textContent = `${fmtAsOf(s.as_of_iso, s.as_of)} · ${s.counts.total} accounts · drive from ${s.drive_source||'—'}`;
+  $('#modeLabel').textContent = s.mode;
+  $('#cTotal').textContent = s.counts.total;
+  $('#cFunded').textContent = s.counts.funded;
+  $('#cEval').textContent = s.counts.eval;
+  const d=(s.drive||'FLAT').toLowerCase();
+  $('#cDrive').innerHTML = `<span class="pill ${d}">${s.drive}</span>`;
+  // Manual Execute is for hands-on firing while disarmed; when automation is armed
+  // the scheduler fires on its own, so hide it to avoid confusing double-fires.
+  $('#btnExecute').style.display = s.auto_execute ? 'none' : '';
+  $('#btnExecute').title = 'Place live orders for today\'s plan now';
+
+  const host = $('#acctGroups');
+  host.innerHTML = '';
+  const groups = s.groups && s.groups.length
+    ? s.groups
+    : [{owner:'Account', accounts:s.accounts||[], counts:s.counts, nq_contract:s.nq_contract}];
+  if(!groups.length){
+    host.innerHTML = `<div class="panel"><div style="padding:22px" class="muted">
+      No API keys configured. Add one in <b>Settings → API keys</b> to see accounts.</div></div>`;
+    return;
+  }
+  for(const g of groups) host.appendChild(buildGroupPanel(g));
 }
 function toggleHidden(){ showHidden=!showHidden; refresh(); }
 
@@ -799,9 +876,11 @@ $('#btnExecute').onclick=async()=>{
   refresh();
 };
 function showResults(r,title){
-  const el=$('#runResults'); el.classList.remove('hidden');
+  $('#resultsPanel').classList.remove('hidden');
+  const el=$('#runResults');
   const lines=r.results.map(x=>{
-    const bits=[`#${x.account_id}`,(x.action||'').padEnd(7)];
+    const owner=x.owner?`[${x.owner}] `:'';
+    const bits=[`${owner}#${x.account_id}`,(x.action||'').padEnd(7)];
     if(x.side) bits.push(`${x.side} ×${x.contracts} @${etToLocalHHMM(x.entry_time)||'—'}`);
     if(x.order_id) bits.push(`order ${x.order_id}`);
     if(x.skipped) bits.push(`SKIPPED: ${x.skipped}`);
@@ -858,6 +937,73 @@ $('#btnSave').onclick=async()=>{
   await jfetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
   toast('Settings saved'); refresh();
 };
+
+// ---- API keys ----
+const EYE=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7z"/><circle cx="12" cy="12" r="3"/></svg>`;
+const EYE_OFF=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/></svg>`;
+const TRASH=`<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
+let CREDS=[];
+const revealed={};   // username -> plaintext key, cached after an explicit reveal
+const esc = s => String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+function dots(n){ return '•'.repeat(Math.min(Math.max(n||16,8),24)); }
+
+async function loadCredentials(){
+  try{ CREDS = await (await jfetch('/api/credentials')).json(); }
+  catch(e){ return; }
+  renderCredentials();
+}
+function renderCredentials(){
+  const host=$('#apiKeyList'); host.innerHTML='';
+  if(!CREDS.length){
+    host.innerHTML=`<div class="muted" style="font-size:12.5px">No API keys yet — add your first below.</div>`;
+    return;
+  }
+  for(const c of CREDS){
+    const shown = revealed[c.username] != null;
+    const keyText = shown ? esc(revealed[c.username]) : (c.masked || dots(c.key_length));
+    const meta = (c.readable===false ? '⚠ key unreadable (secret changed)' : 'live ProjectX key')
+      + (c.base_url ? ` · ${esc(c.base_url)}` : '');
+    const card=document.createElement('div'); card.className='apikey-card';
+    card.innerHTML=`
+      <div class="who"><div class="u">${esc(c.username)}</div><div class="meta">${meta}</div></div>
+      <div class="keybox">
+        <span class="keyval">${keyText}</span>
+        <button class="iconbtn js-eye" title="${shown?'Hide':'Reveal'} key">${shown?EYE_OFF:EYE}</button>
+        <button class="iconbtn danger js-del" title="Delete key">${TRASH}</button>
+      </div>`;
+    card.querySelector('.js-eye').onclick=()=>toggleReveal(c.username);
+    card.querySelector('.js-del').onclick=()=>deleteKey(c.username);
+    host.appendChild(card);
+  }
+}
+async function toggleReveal(username){
+  if(revealed[username] != null){ delete revealed[username]; renderCredentials(); return; }
+  try{
+    const r=await (await jfetch(`/api/credentials/${encodeURIComponent(username)}/reveal`,{method:'POST'})).json();
+    revealed[username]=r.api_key||'';
+  }catch(e){ toast('Could not reveal key'); return; }
+  renderCredentials();
+}
+async function deleteKey(username){
+  const ok=await confirmModal({title:'Delete API key?',
+    body:`Remove the ProjectX key for "${username}"? Its accounts disappear from the dashboard.`,
+    confirmText:'Delete', danger:true});
+  if(!ok) return;
+  CREDS=await (await jfetch(`/api/credentials/${encodeURIComponent(username)}`,{method:'DELETE'})).json();
+  delete revealed[username];
+  renderCredentials(); toast('API key removed'); refresh();
+}
+$('#btnAddKey').onclick=async()=>{
+  const username=$('#newApiUser').value.trim(), api_key=$('#newApiKey').value.trim();
+  if(!username || !api_key){ toast('Enter a username and API key'); return; }
+  const r=await jfetch('/api/credentials',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({username, api_key})});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); toast(e.error||'Could not add key'); return; }
+  CREDS=await r.json();
+  $('#newApiUser').value=''; $('#newApiKey').value='';
+  renderCredentials(); toast('API key added'); refresh();
+};
+$('#newApiKey').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#btnAddKey').click(); });
 
 // ---- accounts editor ----
 const PRESETS = {

@@ -31,8 +31,8 @@ class ProjectXClient:
         base_url: str | None = None,
         timeout: float = 30.0,
     ) -> None:
-        self.username = username or os.environ["PROJECTX_USERNAME"]
-        self.api_key = api_key or os.environ["PROJECTX_API_KEY"]
+        self.username = username or os.getenv("PROJECTX_USERNAME", "")
+        self.api_key = api_key or os.getenv("PROJECTX_API_KEY", "")
         self.base_url = (base_url or os.getenv("PROJECTX_API_URL", DEFAULT_API_URL)).rstrip("/")
         self.rtc_url = os.getenv("PROJECTX_RTC_URL", DEFAULT_RTC_URL).rstrip("/")
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
@@ -46,6 +46,10 @@ class ProjectXClient:
         self._client.close()
 
     def login(self) -> str:
+        if not self.username or not self.api_key:
+            raise ProjectXError(
+                "missing ProjectX credentials (set them in Settings → API keys, "
+                "or via PROJECTX_USERNAME / PROJECTX_API_KEY)")
         data = self._post("/api/Auth/loginKey", {
             "userName": self.username,
             "apiKey": self.api_key,

@@ -22,8 +22,10 @@ WINDOW_END = "11:30"   # ET; after this, the morning's entries are done
 
 
 class Automation:
-    def __init__(self, broker, interval: float = 30.0) -> None:
-        self.broker = broker
+    def __init__(self, pool_provider, interval: float = 30.0) -> None:
+        # `pool_provider` returns the current broker pool, so adding/removing an
+        # API key in Settings is picked up on the next tick without a restart.
+        self.pool_provider = pool_provider
         self.interval = interval
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -57,7 +59,7 @@ class Automation:
                 now = datetime.now(ET)
                 if settings.auto_execute and self._in_window(now, settings):
                     res = await asyncio.to_thread(
-                        service.run_session, self.broker,
+                        service.run_all_sessions, self.pool_provider(),
                         execute=True, respect_times=True, now_et=now)
                     self.last_tick = now.strftime("%Y-%m-%d %H:%M:%S ET")
                     self.last_result = res

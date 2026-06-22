@@ -20,6 +20,7 @@ from fastapi.staticfiles import StaticFiles
 
 from tophat.server import auth, service
 from tophat.services.automation import Automation
+from tophat.store import credentials as creds_store
 from tophat.store.config import load_settings, update_settings
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -33,10 +34,9 @@ WS_INTERVAL = float(os.getenv("TOPHAT_WS_INTERVAL", "3"))
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     auth.seed_admin_from_env()
-    broker, mode = service.make_broker()
-    app.state.broker = broker
-    app.state.mode = mode
-    app.state.automation = Automation(broker)
+    creds_store.seed_credentials_from_env()
+    app.state.brokers = service.build_broker_pool()
+    app.state.automation = Automation(lambda: app.state.brokers)
     app.state.automation.start()
     try:
         yield
@@ -46,6 +46,17 @@ async def lifespan(app: FastAPI):
 
 def create_app() -> FastAPI:
     app = FastAPI(title="TopHat", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+    def rebuild_pool():
+        """Re-read credentials and rebuild the broker pool (after a key change)."""
+        for h in getattr(app.state, "brokers", []):
+            try:
+                if h.broker is not None and hasattr(h.broker, "close"):
+                    h.broker.close()
+            except Exception:
+                pass
+        app.state.brokers = service.build_broker_pool()
+        service.invalidate_snapshot_cache()
 
     @app.middleware("http")
     async def auth_gate(request, call_next):
@@ -82,7 +93,7 @@ def create_app() -> FastAPI:
     # --- data / actions ---
     @app.get("/api/state")
     def get_state():
-        return service.build_snapshot(app.state.broker, mode=app.state.mode)
+        return service.build_dashboard(app.state.brokers)
 
     @app.get("/api/automation")
     def automation_status():
@@ -92,11 +103,41 @@ def create_app() -> FastAPI:
 
     @app.get("/api/accounts")
     def list_accounts():
-        return service.list_accounts_detail(app.state.broker, mode=app.state.mode)
+        return service.list_accounts_detail(app.state.brokers)
 
     @app.post("/api/accounts/{account_id}/lifecycle")
     def patch_lifecycle(account_id: int, body: dict):
-        return service.update_account_lifecycle(account_id, body, app.state.broker)
+        return service.update_account_lifecycle(account_id, body, app.state.brokers)
+
+    # --- ProjectX API keys (encrypted at rest; one per username) ---
+    @app.get("/api/credentials")
+    def list_credentials():
+        return creds_store.public_list()
+
+    @app.post("/api/credentials")
+    def add_credential(body: dict):
+        try:
+            creds_store.add_credential(
+                (body or {}).get("username", ""),
+                (body or {}).get("api_key", ""),
+                (body or {}).get("base_url", ""))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        rebuild_pool()
+        return creds_store.public_list()
+
+    @app.delete("/api/credentials/{username}")
+    def remove_credential(username: str):
+        creds_store.delete_credential(username)
+        rebuild_pool()
+        return creds_store.public_list()
+
+    @app.post("/api/credentials/{username}/reveal")
+    def reveal_credential(username: str):
+        c = creds_store.get_credential(username)
+        if c is None:
+            return JSONResponse({"error": "unknown credential"}, status_code=404)
+        return {"username": c.username, "api_key": c.api_key}
 
     @app.post("/api/accounts/{account_id}/toggle")
     def toggle(account_id: int):
@@ -131,7 +172,7 @@ def create_app() -> FastAPI:
         # Manual Execute from the dashboard is an explicit, confirmed operator
         # action — it fires regardless of the auto-execute (automation) switch.
         manual = bool(body.get("manual", False))
-        return service.run_session(app.state.broker, execute=execute, manual=manual)
+        return service.run_all_sessions(app.state.brokers, execute=execute, manual=manual)
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
@@ -141,7 +182,7 @@ def create_app() -> FastAPI:
         await socket.accept()
         try:
             while True:
-                snap = service.build_snapshot(app.state.broker, mode=app.state.mode)
+                snap = service.build_dashboard(app.state.brokers)
                 await socket.send_json(snap)
                 await asyncio.sleep(WS_INTERVAL)
         except (WebSocketDisconnect, Exception):

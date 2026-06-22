@@ -93,6 +93,24 @@ def test_max_evals_per_day_float_is_coerced():
     assert sum(a.action == "eval" for a in out.values()) == 2
 
 
+def test_nuke_slot_tiebreak_prefers_earlier_enabled():
+    accts = {1: funded(), 2: funded()}   # both fresh, both need their first nuke
+    # #1 has the lower id but was enabled most recently -> #2 (already queued) keeps the slot.
+    enabled_at = {1: 100.0, 2: 1.0}
+    out, _ = assign_day(accts, S, "2026-06-22", ScheduleState(), enabled_at)
+    assert out[2].action == "nuke"
+    assert out[1].action == "idle"
+
+
+def test_recovery_beats_a_newer_enable():
+    # A mid-sequence recovery must keep priority even if it was enabled later.
+    accts = {1: funded(), 2: funded(nuke_tries_this_cycle=1)}
+    enabled_at = {1: 1.0, 2: 100.0}
+    out, _ = assign_day(accts, S, "2026-06-22", ScheduleState(), enabled_at)
+    assert out[2].action == "nuke" and "recovery" in out[2].note
+    assert out[1].action == "idle"
+
+
 def test_eval_slot_tiebreak_prefers_earlier_enabled():
     accts = {1: _eval(), 2: _eval(), 3: _eval()}
     # #1 has the lowest id but was enabled most recently -> it should be the one to wait,

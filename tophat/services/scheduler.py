@@ -108,12 +108,14 @@ def assign_day(
         else:
             out[aid] = Assignment(aid, "idle", "", "waiting for an eval slot")
 
-    # Order nuke candidates: pending recoveries first, then longest-since-last-nuke.
+    # Order nuke candidates: pending recoveries first, then longest-since-last-nuke,
+    # then earliest enabled (a freshly enabled account waits behind an already-queued
+    # one rather than bumping it), then id.
     def sort_key(aid: int):
         st = accounts[aid]
         recovery = st.nuke_tries_this_cycle >= 1   # mid-sequence, must continue
         last = sched.last_nuke_date.get(aid, "")    # "" sorts first => never nuked
-        return (0 if recovery else 1, last, aid)
+        return (0 if recovery else 1, last, enabled_at.get(aid, 0.0), aid)
 
     nuke_candidates.sort(key=sort_key)
     slots = max(0, int(settings.max_nukes_per_day))
