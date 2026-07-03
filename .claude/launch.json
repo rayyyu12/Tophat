@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "tophat-preview-mock",
+      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeArgs": ["deploy\\preview_server.py"],
+      "port": 8899
+    }
+  ]
+}

@@ -16,9 +16,13 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from tophat.broker.mock import MockBroker
-from tophat.engine import Action, Phase, account_base, decide, is_nuke_cycle, should_omit_stop
+from tophat.engine import (
+    SIGNAL_PLAN_TEMPLATES, Action, Phase, account_base, decide, is_nuke_cycle,
+    should_omit_stop)
+from tophat.services import mirror_sync
 from tophat.services.guards import position_guard
 from tophat.services.lifecycle import mark_payout_taken, reconcile, record_pending
+from tophat.store.mirrors import load_mirrors, merge_save_mirrors
 from tophat.services.scheduler import assign_day, load_schedule, save_schedule
 from tophat.services.status import (
     infer_phase_from_name, is_practice, lifecycle_label, sync_phase_from_name)
@@ -328,6 +332,15 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
             plan_action = "disabled"
             plan_side = plan_entry = plan_note = ""
             plan_contracts = 0
+        elif entry.signal_plan and _effective_can_trade(a.can_trade, entry):
+            # Signal channel: fires its designated bracket for the copier — shown
+            # even on practice accounts (which are otherwise never traded).
+            tpl = SIGNAL_PLAN_TEMPLATES.get(entry.signal_plan)
+            plan_action = "signal"
+            plan_side = _side(drive) if drive else ""
+            plan_entry = settings.nuke_entry_time
+            plan_contracts = tpl.contracts if tpl else 0
+            plan_note = f"signal channel — {entry.signal_plan}"
         elif not tradeable:
             plan_action = "idle"
             plan_side = plan_entry = ""
@@ -351,6 +364,7 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
             "can_trade": tradeable,
             "broker_can_trade": a.can_trade,
             "force_inactive": entry.force_inactive,
+            "signal_plan": entry.signal_plan,
             "trading_status": "active" if tradeable else "inactive",
             "status": status,
             "terminal": terminal,
@@ -547,6 +561,61 @@ def set_account_enabled(account_id: int, enabled: bool) -> bool:
     return e.enabled
 
 
+def _fire_signal(broker, aid: int, st, plan_key: str, drive: int, settings, states,
+                 balance: dict, nq: str, today: str, hhmm: str,
+                 respect_times: bool, really_execute: bool) -> tuple[dict, bool]:
+    """Fire one signal channel's bracket (docs/MULTI_FIRM_PLAN.md §3).
+
+    Same guards as a strategy fire (one/day, entry window, hedge guard, contained
+    failures) but the bracket comes from engine.signal_plan, not decide() — signal
+    accounts have no lifecycle. Returns (result_row, placed?)."""
+    from tophat.engine import signal_plan
+    entry_time = settings.nuke_entry_time
+    if st.last_fire_date == today:
+        return {"account_id": aid, "action": "done", "note": "already fired today"}, False
+    if respect_times:
+        if hhmm < entry_time:
+            return {"account_id": aid, "action": "scheduled",
+                    "note": f"signal fires {entry_time} ET"}, False
+        grace = max(0, int(getattr(settings, "entry_grace_min", 10)))
+        if grace and hhmm > _plus_minutes(entry_time, grace):
+            return {"account_id": aid, "action": "missed",
+                    "note": f"signal window {entry_time}+{grace}m passed"}, False
+    plan = signal_plan(plan_key, drive)
+    if plan is None:
+        return {"account_id": aid, "action": "hold",
+                "note": "no drive signal (flat open)"}, False
+    row = {"account_id": aid, "action": "signal", "side": _side(plan.direction),
+           "contracts": plan.contracts, "entry_time": entry_time,
+           "note": f"signal channel: {plan_key}"}
+    if not really_execute:
+        return row, False
+    if settings.hedge_guard:
+        ok, reason = position_guard(broker, aid, nq)
+        if not ok:
+            row["skipped"] = reason
+            _trade.info("SKIP signal acct=%s %s — hedge guard: %s", aid, plan_key, reason)
+            return row, False
+    entry_bal = balance.get(aid, st.equity)
+    _trade.info("PLACE signal acct=%s %s %s x%d target=%.2fpt stop=%.2fpt drive=%s",
+                aid, plan_key, _side(plan.direction), plan.contracts,
+                plan.target_pts, plan.stop_pts, _side(drive))
+    try:
+        if not settings.hedge_guard and _open_size(broker, aid, nq):
+            broker.close_contract(aid, nq)
+        order_id = broker.place_bracket(aid, nq, plan)
+        row["order_id"] = order_id
+        record_pending(st, plan, entry_bal, today, settings.point_value)
+        merge_save(states, [aid])
+        _trade.info("PLACED signal acct=%s %s order_id=%s", aid, plan_key, order_id)
+        _broker_order_state(broker, aid)
+        return row, True
+    except Exception as exc:
+        row["error"] = str(exc)
+        _trade.exception("SIGNAL FIRE FAILED acct=%s %s — skipped", aid, plan_key)
+        return row, False
+
+
 def run_session(broker, *, execute: bool, respect_times: bool = False,
                 now_et: datetime | None = None, manual: bool = False) -> dict:
     """Reconcile closed trades, then fire today's due plan.
@@ -579,14 +648,16 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
     phase_fixed = False
 
     tradeable = {}
+    signal_keys: dict[int, str] = {}   # aid -> engine.SIGNAL_PLAN_TEMPLATES key
     for a in accounts:
         entry = registry.entry(a.account_id)
         if not _effective_can_trade(a.can_trade, entry) or not entry.enabled:
             continue
-        if is_practice(a.name) and not manual:
-            # Practice accounts never auto-trade or hold an eval slot. Manual
-            # Execute is the exception: enabling ONLY a practice account and
-            # firing by hand is how a live setup is validated end-to-end.
+        sig = entry.signal_plan if entry.signal_plan in SIGNAL_PLAN_TEMPLATES else ""
+        if is_practice(a.name) and not manual and not sig:
+            # Practice accounts never auto-trade or hold an eval slot. Two
+            # exceptions: manual Execute (the validation path), and an explicit
+            # signal-channel designation (fires its signal bracket for the copier).
             continue
         is_new = a.account_id not in states
         st = get_or_create(states, a.account_id)
@@ -596,10 +667,14 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
         elif sync_phase_from_name(st, a.name, cfg):
             phase_fixed = True
         tradeable[a.account_id] = st
+        if sig:
+            signal_keys[a.account_id] = sig
 
     # 1. Reconcile closed trades -> advance the payout cycle (live only).
     reconciled = []
     auto_disabled: list[int] = []
+    mirrors = load_mirrors() if really_execute else {}
+    mirror_touched: list[str] = []
     if really_execute:
         for aid, st in tradeable.items():
             if not st.pending_label:
@@ -624,17 +699,31 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                             st.winning_days_this_cycle, st.nuke_hit_this_cycle, st.payout_ready)
                 if st.phase == Phase.BLOWN:
                     _trade.warning("BLOWN acct=%s — trailing floor breached at bal=$%.2f", aid, cur_bal)
+                # Followers book the leader's ACTUAL delta scaled by their multiplier.
+                mirror_touched.extend(mirror_sync.apply_leader_outcome(
+                    mirrors, aid, cur_bal - entry_bal, today))
             if st.payout_ready and settings.auto_disable_on_payout_ready and registry.is_enabled(aid):
                 registry.entry(aid).enabled = False  # surface for manual withdrawal
                 auto_disabled.append(aid)
 
-    enabled_at = {aid: registry.entry(aid).enabled_at for aid in tradeable}
-    assignments, sched = assign_day(tradeable, settings, today, load_schedule(), enabled_at)
+    # Signal channels never compete for eval/nuke slots — the scheduler only ever
+    # sees the strategy fleet.
+    strategy = {aid: st for aid, st in tradeable.items() if aid not in signal_keys}
+    enabled_at = {aid: registry.entry(aid).enabled_at for aid in strategy}
+    assignments, sched = assign_day(strategy, settings, today, load_schedule(), enabled_at)
 
     # 2. Fire due accounts.
     results = []
     placed = 0
     for aid, st in tradeable.items():
+        if aid in signal_keys:
+            row, did_place = _fire_signal(
+                broker, aid, st, signal_keys[aid], drive, settings, states, balance,
+                nq, today, hhmm, respect_times, really_execute)
+            if did_place:
+                placed += 1
+            results.append(row)
+            continue
         asg = assignments[aid]
         if asg.action in ("idle", "retire"):
             results.append({"account_id": aid, "action": asg.action, "note": asg.note})
@@ -717,6 +806,8 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
         # Merge-save only the accounts this pass touched, so we can't clobber a
         # concurrent writer's entries (snapshot inits, lifecycle edits).
         merge_save(states, list(tradeable.keys()))
+        if mirror_touched:
+            merge_save_mirrors(mirrors, mirror_touched)
         if auto_disabled:
             with _REG_LOCK:
                 fresh = load_registry()
@@ -834,6 +925,13 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         entry.enabled = new_enabled
     if "force_inactive" in patch:
         entry.force_inactive = bool(patch["force_inactive"])
+    if "signal_plan" in patch:
+        key = str(patch["signal_plan"] or "")
+        if key and key not in SIGNAL_PLAN_TEMPLATES:
+            return {"account_id": account_id,
+                    "error": f"unknown signal plan {key!r} "
+                             f"(known: {sorted(SIGNAL_PLAN_TEMPLATES)})"}
+        entry.signal_plan = key
 
     if "sync_balance" in patch and patch["sync_balance"]:
         bal = accounts[account_id].balance
@@ -860,4 +958,5 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         "broker_can_trade": a.can_trade,
         "can_trade": eff,
         "alias": entry.alias,
+        "signal_plan": entry.signal_plan,
     }

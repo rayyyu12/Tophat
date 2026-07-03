@@ -29,9 +29,13 @@ DATA = Path(_TMP)
 @pytest.fixture(autouse=True)
 def clean_state():
     """Fresh state before every test."""
+    import shutil
     for f in DATA.glob("*"):
         try:
-            f.unlink()
+            if f.is_dir():
+                shutil.rmtree(f, ignore_errors=True)   # e.g. copier_plans/
+            else:
+                f.unlink()
         except OSError:
             pass
     yield

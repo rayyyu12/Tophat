@@ -115,6 +115,31 @@ class Decision:
     note: str = ""
 
 
+# --- signal-account plans (docs/MULTI_FIRM_PLAN.md §3) -------------------------
+# Apex-native brackets fired from designated practice/throwaway leader accounts so
+# the copy-trader can distribute them to API-less follower firms. Signal accounts
+# bypass decide() and the eval/funded lifecycle entirely; the bracket (including
+# the stop leg — followers rely on it being copied) is always fully specified.
+SIGNAL_PLAN_TEMPLATES: dict[str, TradePlan] = {
+    "apex-nuke": TradePlan(direction=1, contracts=2, target_pts=32.5, stop_pts=25.0,
+                           label="sig-apex-nuke"),
+    "apex-flip": TradePlan(direction=1, contracts=1, target_pts=16.25, stop_pts=50.0,
+                           label="sig-apex-flip"),
+    "apex-eval": TradePlan(direction=1, contracts=5, target_pts=30.0, stop_pts=10.0,
+                           label="sig-apex-eval"),
+}
+
+
+def signal_plan(key: str, drive_direction: int) -> TradePlan | None:
+    """The bracket a signal channel fires today, oriented by drive. None = no fire
+    (unknown key or flat drive)."""
+    tpl = SIGNAL_PLAN_TEMPLATES.get(key)
+    if tpl is None or drive_direction == 0:
+        return None
+    from dataclasses import replace
+    return replace(tpl, direction=drive_direction)
+
+
 def account_base(cfg: AccountConfig, state: AccountState) -> float:
     """Starting balance for this account: $50k eval combine vs $0 funded."""
     return state.base_balance

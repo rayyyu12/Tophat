@@ -18,6 +18,9 @@ class AccountEntry:
     notes: str = ""
     force_inactive: bool = False  # operator override when broker canTrade is misleading
     enabled_at: float = 0.0       # epoch when last enabled; eval-slot tiebreaker (newest waits)
+    signal_plan: str = ""         # non-empty = signal channel (engine.SIGNAL_PLAN_TEMPLATES
+                                  # key): fires that bracket for the copier, bypasses the
+                                  # strategy fleet entirely
 
 
 @dataclass
@@ -71,6 +74,7 @@ def save_registry(reg: AccountRegistry, path: Path = REGISTRY_FILE) -> None:
                 "notes": e.notes,
                 "force_inactive": e.force_inactive,
                 "enabled_at": e.enabled_at,
+                "signal_plan": e.signal_plan,
             }
             for k, e in reg.accounts.items()
         },

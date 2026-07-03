@@ -299,6 +299,44 @@
     border-color:transparent;box-shadow:0 10px 28px -12px rgba(251,113,133,.6)}
   .btn.danger:hover{filter:brightness(1.06)}
 
+  /* ---------- Operations page ---------- */
+  .ops-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:18px}
+  @media (max-width:1024px){.ops-grid{grid-template-columns:1fr}}
+  .hazards{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
+  .hazard{display:flex;align-items:center;gap:12px;padding:12px 16px;
+    border-radius:var(--radius-sm);border:1px solid var(--border-strong);
+    background:linear-gradient(180deg,var(--surface-2),var(--surface));font-size:13px}
+  .hazard .who{font-weight:600;font-family:var(--mono);font-size:12px;flex:none}
+  .hazard.danger{box-shadow:inset 3px 0 0 var(--short)}
+  .hazard.danger .who{color:var(--short)}
+  .hazard.action{box-shadow:inset 3px 0 0 var(--accent-2)}
+  .hazard.action .who{color:var(--accent-2)}
+  .hazard.warn{box-shadow:inset 3px 0 0 var(--warn)}
+  .hazard.warn .who{color:var(--warn)}
+  .hazard.info{box-shadow:inset 3px 0 0 var(--idle)}
+  .hazard.info .who{color:var(--idle)}
+  .planline{display:flex;align-items:flex-start;gap:12px;padding:13px 22px;
+    border-bottom:1px solid var(--border);font-size:13px}
+  .planline:last-child{border-bottom:none}
+  .planline .act{flex:none;width:104px;text-align:center;padding:3px 0;border-radius:7px;
+    font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.05em;
+    border:1px solid transparent;margin-top:1px}
+  .planline .act.MAP{color:var(--long);background:rgba(74,222,128,.12);border-color:rgba(74,222,128,.25)}
+  .planline .act.MOVE{color:var(--warn);background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.25)}
+  .planline .act.UNMAP{color:var(--short);background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.25)}
+  .planline .act.SET_MULT,.planline .act.SET_CHANNEL{color:var(--flip);background:rgba(86,198,245,.12);border-color:rgba(86,198,245,.25)}
+  .planline .act.BUY{color:var(--accent);background:var(--accent-dim);border-color:var(--border-strong)}
+  .planline .act.REQUEST_PAYOUT{color:var(--accent-2);background:rgba(242,163,94,.13);border-color:rgba(242,163,94,.26)}
+  .planline .act.ACTIVATE{color:var(--nuke);background:rgba(192,132,252,.13);border-color:rgba(192,132,252,.25)}
+  .planline .what{min-width:0}
+  .planline .why{color:var(--faint);font-size:11.5px;margin-top:3px}
+  .applied-badge{display:inline-flex;align-items:center;gap:7px;color:var(--long);
+    font-weight:600;font-size:12.5px}
+  .applied-badge svg{width:15px;height:15px}
+  .mirror-add{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
+    align-items:end}
+  .mirror-add .btn{height:39px}
+
   .hidden{display:none}
   .toast{position:fixed;bottom:26px;right:26px;
     background:linear-gradient(180deg,var(--surface-2),var(--surface));
@@ -358,9 +396,13 @@
         </svg>
       </span> TopHat
     </div>
+    <div class="nav" data-page="ops">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
+      Operations
+    </div>
     <div class="nav active" data-page="dashboard">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="9"/><rect x="14" y="3" width="7" height="5"/><rect x="14" y="12" width="7" height="9"/><rect x="3" y="16" width="7" height="5"/></svg>
-      Dashboard
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 13l3-4 4 3 5-7"/></svg>
+      Trading
     </div>
     <div class="nav" data-page="accounts">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
@@ -383,10 +425,50 @@
   </aside>
 
   <main class="main">
-    <!-- DASHBOARD -->
+    <!-- OPERATIONS -->
+    <section id="page-ops" class="hidden">
+      <div class="topbar">
+        <div><h1>Operations</h1><div class="sub" id="opsSub">loading…</div></div>
+        <div class="row">
+          <span class="applied-badge hidden" id="opsApplied">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
+            <span id="opsAppliedAt"></span></span>
+          <button class="btn primary" id="btnApplyPlan">Mark applied in Tradecopia</button>
+        </div>
+      </div>
+      <div class="hazards" id="opsHazards"></div>
+      <div class="ops-grid">
+        <div>
+          <div class="panel" style="margin-bottom:18px">
+            <div class="head"><h2>Today's Copier Plan</h2><span class="muted" id="opsPlanCount"></span></div>
+            <div id="opsPlanLines"></div>
+          </div>
+          <div class="panel">
+            <div class="head"><h2>Buy list</h2><span class="muted">top up Mondays</span></div>
+            <div id="opsBuys"></div>
+          </div>
+        </div>
+        <div>
+          <div class="panel" style="margin-bottom:18px">
+            <div class="head"><h2>Signal channels</h2><span class="muted" id="opsChanMeta"></span></div>
+            <div id="opsChannels"></div>
+          </div>
+          <div class="panel" style="margin-bottom:18px">
+            <div class="head"><h2>Payout queue</h2></div>
+            <div id="opsPayouts"></div>
+          </div>
+          <div class="panel">
+            <div class="head"><h2>Mirror mappings</h2><span class="muted" id="opsMirrorMeta"></span></div>
+            <div id="opsMirrors"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TRADING (leader dashboard) -->
     <section id="page-dashboard">
       <div class="topbar">
-        <div><h1>Dashboard</h1><div class="sub" id="asOf">connecting…</div></div>
+        <div><h1>Trading</h1><div class="sub" id="asOf">connecting…</div></div>
         <div class="row">
           <button class="btn" id="btnPreview" title="Dry run: compute today's plan for every enabled account and show what would be placed — without sending any orders.">Preview day</button>
           <button class="btn primary" id="btnExecute">Execute</button>
@@ -478,6 +560,14 @@
             <div class="check-row"><input type="checkbox" id="f_enabled"><label for="f_enabled">Enabled in TopHat</label></div>
             <div class="check-row"><input type="checkbox" id="f_force_inactive"><label for="f_force_inactive">Mark inactive (override broker)</label></div>
             <div class="hint" style="margin:-6px 0 14px">Use when Topstep shows ineligible but API still reports canTrade=true.</div>
+            <div class="field"><label for="f_signal_plan">Signal channel</label>
+              <select class="acct-pick" id="f_signal_plan">
+                <option value="">— none (strategy account) —</option>
+                <option value="apex-nuke">apex-nuke · $1,300 nuke (32.5/25pt × 2 minis)</option>
+                <option value="apex-flip">apex-flip · $325 flip (16.25/50pt × 1 mini)</option>
+                <option value="apex-eval">apex-eval · 1-day $3,000 (30/10pt × 5 minis)</option>
+              </select>
+              <div class="hint">Designates this account as a copier signal leader — it fires this bracket daily and leaves the strategy fleet. Use the practice account or a disposable micro eval.</div></div>
             <div class="field"><label>Equity ($)</label><input id="f_equity" type="number" step="0.01"></div>
             <div class="field"><label>Peak equity EOD ($)</label><input id="f_peak" type="number" step="0.01"></div>
             <div class="field"><label>Base balance ($)</label><input id="f_base" type="number" step="0.01">
@@ -485,6 +575,34 @@
             <div class="check-row"><input type="checkbox" id="f_sync_balance"><label for="f_sync_balance">Sync equity & peak from broker balance on save</label></div>
           </div>
         </div>
+      </div>
+
+      <!-- MIRROR (follower) ACCOUNTS -->
+      <div class="panel" style="margin-top:20px">
+        <div class="head"><h2>Mirror accounts</h2>
+          <span class="muted">API-less follower firms · balances inferred, synced manually</span></div>
+        <div class="body" style="padding:18px 22px">
+          <div class="mirror-add">
+            <div class="field" style="margin:0"><label for="m_firm">Firm</label>
+              <select class="acct-pick" id="m_firm" style="max-width:none">
+                <option value="lucid-50k">Lucid 50K</option>
+                <option value="tradeify-50k">Tradeify 50K</option>
+                <option value="apex-50k">Apex 50K</option>
+              </select></div>
+            <div class="field" style="margin:0"><label for="m_number">Account number(s)</label>
+              <input id="m_number" placeholder="one or comma-separated" autocomplete="off"></div>
+            <div class="field" style="margin:0"><label for="m_alias">Alias <span class="muted">(optional)</span></label>
+              <input id="m_alias" placeholder="display name" autocomplete="off"></div>
+            <button class="btn primary" id="btnAddMirror">Add mirror(s)</button>
+          </div>
+          <div class="hint" style="margin-top:10px">New mirrors start as fresh evals at the
+            firm's copier scale (Tradeify pre-fills 0.8×). Paste several account numbers
+            comma-separated to bulk-add.</div>
+        </div>
+        <div class="tablewrap"><table id="mirrorTable" style="min-width:900px">
+          <thead><tr><th>Mirror</th><th>Firm</th><th>Phase</th><th>Leader</th><th>Mult</th>
+            <th>Inferred P/L</th><th>Room</th><th>Win days</th><th>Verified</th><th>Actions</th></tr></thead>
+          <tbody></tbody></table></div>
       </div>
     </section>
 
@@ -606,15 +724,19 @@ async function jfetch(url, opts){
   return r;
 }
 // router (page nav only — sign-out is separate)
+let CUR_PAGE='dashboard';
 document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
   document.querySelectorAll('.nav[data-page]').forEach(x=>x.classList.remove('active'));
   n.classList.add('active');
   const p=n.dataset.page;
+  CUR_PAGE=p;
+  $('#page-ops').classList.toggle('hidden',p!=='ops');
   $('#page-dashboard').classList.toggle('hidden',p!=='dashboard');
   $('#page-accounts').classList.toggle('hidden',p!=='accounts');
   $('#page-settings').classList.toggle('hidden',p!=='settings');
   if(p==='settings'){ loadSettings(); loadCredentials(); }
   if(p==='accounts') loadAccountsPage();
+  if(p==='ops') loadOps();
 });
 $('#btnLogout').onclick = async () => {
   await fetch('/api/logout',{method:'POST'});
@@ -1047,6 +1169,7 @@ function fillAcctForm(acct){
   $('#f_notes').value = acct.notes || '';
   $('#f_enabled').checked = acct.enabled;
   $('#f_force_inactive').checked = acct.force_inactive;
+  $('#f_signal_plan').value = acct.signal_plan || '';
   $('#f_equity').value = s.equity;
   $('#f_peak').value = s.peak_equity_eod;
   $('#f_base').value = s.base_balance;
@@ -1072,6 +1195,7 @@ async function loadAccountsPage(){
   if(prev && ACCT_LIST.some(a=>String(a.account_id)===prev)) pick.value = prev;
   else if(ACCT_LIST.length === 1) pick.value = String(ACCT_LIST[0].account_id);
   onAcctPick();
+  loadMirrors();
 }
 
 function onAcctPick(){
@@ -1109,6 +1233,7 @@ $('#btnSaveAcct').onclick = async()=>{
     notes: $('#f_notes').value,
     enabled: $('#f_enabled').checked,
     force_inactive: $('#f_force_inactive').checked,
+    signal_plan: $('#f_signal_plan').value,
     equity: parseFloat($('#f_equity').value),
     peak_equity_eod: parseFloat($('#f_peak').value),
     base_balance: parseFloat($('#f_base').value),
@@ -1121,6 +1246,279 @@ $('#btnSaveAcct').onclick = async()=>{
   refresh();
 };
 
+// ---- operations page ----
+let OPS_PLAN=null, OPS_MIRRORS=[];
+const FIRM_SHORT={'lucid-50k':'Lucid','tradeify-50k':'Tradeify','apex-50k':'Apex'};
+const PHASE_PILL={eval:'eval',funded:'flip',waiting:'idle',passed:'passed',blown:'blown',retired:'retire'};
+
+async function loadOps(){
+  try{
+    const [plan, mir] = await Promise.all([
+      (await jfetch('/api/copier-plan')).json(),
+      (await jfetch('/api/mirrors')).json(),
+    ]);
+    OPS_PLAN=plan; OPS_MIRRORS=mir.mirrors||[];
+    renderOps(plan, mir);
+  }catch(e){ $('#opsSub').textContent='could not load the copier plan'; }
+}
+
+function renderOps(plan, mir){
+  const nMap=plan.lines.filter(x=>x.action!=='BUY').length;
+  $('#opsSub').textContent=`${plan.date} · ${nMap} copier edit${nMap===1?'':'s'} · ${OPS_MIRRORS.length} mirror${OPS_MIRRORS.length===1?'':'s'}`;
+  const applied=!!plan.applied_at;
+  $('#opsApplied').classList.toggle('hidden',!applied);
+  $('#opsAppliedAt').textContent=applied?`applied ${plan.applied_at.replace(/:\d\d ET$/,' ET')}`:'';
+  const btn=$('#btnApplyPlan');
+  btn.disabled=applied;
+  btn.textContent=applied?'Applied for today':'Mark applied in Tradecopia';
+
+  // hazards strip
+  const hz=$('#opsHazards'); hz.innerHTML='';
+  for(const h of (plan.hazards||[])){
+    const d=document.createElement('div');
+    d.className=`hazard ${h.severity}`;
+    d.innerHTML=`<span class="who">${esc(h.alias)}</span><span>${esc(h.text)}</span>`;
+    hz.appendChild(d);
+  }
+
+  // plan lines
+  const host=$('#opsPlanLines'); host.innerHTML='';
+  const lines=plan.lines.filter(x=>x.action!=='BUY');
+  $('#opsPlanCount').textContent=lines.length?`${lines.length} line${lines.length===1?'':'s'}`:'';
+  if(!lines.length){
+    host.innerHTML=`<div style="padding:22px" class="muted">No changes today — yesterday's mappings carry over.</div>`;
+  }
+  for(const l of lines){
+    const d=document.createElement('div');
+    d.className='planline';
+    d.innerHTML=`<span class="act ${esc(l.action)}">${esc(l.action.replace('_',' '))}</span>
+      <div class="what">${esc(l.detail)}<div class="why">${esc(l.reason)}</div></div>`;
+    host.appendChild(d);
+  }
+
+  // buys
+  const buys=$('#opsBuys'); buys.innerHTML='';
+  if(!(plan.buys||[]).length){
+    buys.innerHTML=`<div style="padding:22px" class="muted">All pipelines are full.</div>`;
+  } else {
+    for(const b of plan.buys){
+      const d=document.createElement('div');
+      d.className='planline';
+      d.innerHTML=`<span class="act BUY">BUY</span>
+        <div class="what">${esc(b.firm)}: ${b.count} eval${b.count===1?'':'s'}
+          <span class="mono">(~$${Number(b.cost).toLocaleString()})</span>
+          <div class="why">${esc(b.reason)}</div></div>`;
+      buys.appendChild(d);
+    }
+  }
+
+  // channels
+  const ch=$('#opsChannels'); ch.innerHTML='';
+  $('#opsChanMeta').textContent=(plan.channels||[]).length?'':'';
+  if(!(plan.channels||[]).length){
+    ch.innerHTML=`<div style="padding:22px" class="muted">No signal channels configured.
+      Designate one on the <b>Accounts</b> page (Signal channel field) — e.g. the practice
+      account as <span class="mono">apex-nuke</span>.</div>`;
+  } else {
+    const t=document.createElement('div');
+    t.className='tablewrap';
+    t.innerHTML=`<table style="min-width:0"><thead><tr><th>Channel</th><th>Leader</th>
+      <th>Followers today</th></tr></thead><tbody>${plan.channels.map(c=>`
+      <tr><td><span class="pill ${c.channel.includes('nuke')?'nuke':c.channel.includes('flip')?'flip':'eval'}">${esc(c.channel)}</span></td>
+      <td class="mono" style="text-align:center">${esc(c.leader)}</td>
+      <td class="mono" style="text-align:center">${c.followers}</td></tr>`).join('')}</tbody></table>`;
+    ch.appendChild(t);
+  }
+
+  // payout queue
+  const pq=$('#opsPayouts'); pq.innerHTML='';
+  if(!(plan.payout_queue||[]).length){
+    pq.innerHTML=`<div style="padding:22px" class="muted">Nothing awaiting withdrawal.</div>`;
+  } else {
+    for(const p of plan.payout_queue){
+      const d=document.createElement('div');
+      d.className='planline';
+      d.innerHTML=`<span class="act REQUEST_PAYOUT">PAYOUT</span>
+        <div class="what">${esc(p.alias)} · ${esc(p.firm)} ·
+          <span class="mono">$${Number(p.amount).toLocaleString()}</span>
+          <div class="why">request at the firm, then Mark Paid</div></div>
+        <button class="btn" style="padding:5px 12px;font-size:11.5px;margin-left:auto"
+          onclick="mirrorPaid('${esc(p.mirror_id)}')">Mark Paid</button>`;
+      pq.appendChild(d);
+    }
+  }
+
+  // mirror mapping tables, grouped by firm
+  const mh=$('#opsMirrors'); mh.innerHTML='';
+  $('#opsMirrorMeta').textContent=OPS_MIRRORS.length?`${OPS_MIRRORS.length} total`:'';
+  if(!OPS_MIRRORS.length){
+    mh.innerHTML=`<div style="padding:22px" class="muted">No mirror accounts yet.
+      Add follower-firm accounts on the <b>Accounts</b> page to start tracking them here.</div>`;
+    return;
+  }
+  const byFirm={};
+  for(const m of OPS_MIRRORS) (byFirm[m.firm]=byFirm[m.firm]||[]).push(m);
+  for(const firm of Object.keys(byFirm).sort()){
+    const rows=byFirm[firm].map(m=>{
+      const desired=(plan.desired||{})[m.mirror_id];
+      const lead=desired&&desired.leader_id!=null?`#${desired.leader_id}`
+        :(m.leader_id!=null?`#${m.leader_id}`:'—');
+      const chTag=m.firm==='apex-50k'&&(desired?desired.channel:m.channel)
+        ?` <span class="muted">(${desired?desired.channel:m.channel})</span>`:'';
+      const ver=m.last_verified||'never';
+      const stale=!m.last_verified;
+      return `<tr class="${['blown','retired'].includes(m.phase)?'dim':''}">
+        <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
+          <div class="muted mono">${esc(m.account_number||m.mirror_id)}</div></td>
+        <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
+        <td class="mono">${lead}${chTag}</td>
+        <td class="mono">${Number(m.multiplier).toFixed(2).replace(/\.?0+$/,'')}×</td>
+        <td class="mono">${fmtUsd(m.equity)}</td>
+        <td class="mono">${fmtUsd(m.room)}</td>
+        <td class="mono">${m.win_days}/${m.win_days_required}</td>
+        <td class="${stale?'':'muted'}" style="${stale?'color:var(--warn)':''}">${esc(ver)}</td>
+      </tr>`;
+    }).join('');
+    const p=document.createElement('div');
+    p.style.marginBottom='0';
+    p.innerHTML=`<div class="head" style="border-top:1px solid var(--border)">
+        <h2 style="font-size:13px">${esc(FIRM_SHORT[firm]||firm)}</h2>
+        <span class="muted">${byFirm[firm].length}</span></div>
+      <div class="tablewrap"><table style="min-width:760px"><thead><tr>
+        <th>Mirror</th><th>Phase</th><th>Leader</th><th>Mult</th><th>Inferred P/L</th>
+        <th>Room</th><th>Days</th><th>Verified</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    mh.appendChild(p);
+  }
+}
+
+$('#btnApplyPlan').onclick=async()=>{
+  const n=OPS_PLAN?OPS_PLAN.lines.filter(x=>x.action!=='BUY').length:0;
+  const ok=await confirmModal({
+    title:'Mark the copier plan applied?',
+    body:`Confirm you have made ${n===1?'this edit':`these ${n} edits`} in Tradecopia. `+
+      `TopHat will assume the new mappings are live and track follower accounts accordingly.`,
+    confirmText:'Applied'});
+  if(!ok) return;
+  const r=await (await jfetch('/api/copier-plan/apply',{method:'POST'})).json();
+  OPS_PLAN=r;
+  toast('Copier plan applied');
+  loadOps();
+};
+
+async function mirrorPaid(mid){
+  const ok=await confirmModal({title:'Mark mirror payout paid?',
+    body:'Confirm the firm paid this withdrawal. This advances the mirror to its next cycle.',
+    confirmText:'Mark Paid'});
+  if(!ok) return;
+  const r=await (await jfetch(`/api/mirrors/${encodeURIComponent(mid)}/payout-taken`,{method:'POST'})).json();
+  toast(`Recorded $${Number(r.paid).toLocaleString()} payout`);
+  loadOps(); if(CUR_PAGE==='accounts') loadMirrors();
+}
+
+// ---- mirror accounts (Accounts page) ----
+let MIRROR_LIST=[];
+async function loadMirrors(){
+  try{ MIRROR_LIST=(await (await jfetch('/api/mirrors')).json()).mirrors||[]; }
+  catch(e){ return; }
+  renderMirrorTable();
+}
+function renderMirrorTable(){
+  const body=document.querySelector('#mirrorTable tbody');
+  body.innerHTML='';
+  if(!MIRROR_LIST.length){
+    body.innerHTML=`<tr><td colspan="10" class="muted" style="text-align:center">
+      no mirror accounts yet</td></tr>`;
+    return;
+  }
+  for(const m of MIRROR_LIST){
+    const tr=document.createElement('tr');
+    if(['blown','retired'].includes(m.phase)) tr.classList.add('dim');
+    const acts=[];
+    if(m.phase==='passed')
+      acts.push(`<button class="btn" style="padding:5px 10px;font-size:11px"
+        onclick="mirrorActivate('${esc(m.mirror_id)}')">Activate funded</button>`);
+    if(m.phase==='waiting')
+      acts.push(`<button class="btn" style="padding:5px 10px;font-size:11px"
+        onclick="mirrorPair('${esc(m.mirror_id)}')">Pair leader…</button>`);
+    if(m.payout_ready)
+      acts.push(`<button class="btn" style="padding:5px 10px;font-size:11px"
+        onclick="mirrorPaid('${esc(m.mirror_id)}')">Mark Paid</button>`);
+    acts.push(`<button class="iconbtn" title="Sync balance from the firm dashboard"
+      onclick="mirrorSync('${esc(m.mirror_id)}')">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>`);
+    acts.push(`<button class="iconbtn danger" title="Delete mirror"
+      onclick="mirrorDelete('${esc(m.mirror_id)}')">${TRASH}</button>`);
+    tr.innerHTML=`
+      <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
+        <div class="muted mono">${esc(m.account_number||'—')}</div></td>
+      <td>${esc(FIRM_SHORT[m.firm]||m.firm)}</td>
+      <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
+      <td class="mono">${m.leader_id!=null?'#'+m.leader_id:'—'}</td>
+      <td class="mono">${Number(m.multiplier).toFixed(2).replace(/\.?0+$/,'')}×</td>
+      <td class="mono">${fmtUsd(m.equity)}</td>
+      <td class="mono">${fmtUsd(m.room)}</td>
+      <td class="mono">${m.win_days}/${m.win_days_required}</td>
+      <td class="muted">${esc(m.last_verified||'never')}</td>
+      <td><span class="cell-actions">${acts.join('')}</span></td>`;
+    body.appendChild(tr);
+  }
+}
+$('#btnAddMirror').onclick=async()=>{
+  const firm=$('#m_firm').value;
+  const nums=$('#m_number').value.split(',').map(x=>x.trim()).filter(Boolean);
+  const alias=$('#m_alias').value.trim();
+  if(!nums.length) nums.push('');
+  let added=0;
+  for(const num of nums){
+    const r=await jfetch('/api/mirrors',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({firm, account_number:num, alias:nums.length===1?alias:''})});
+    if(r.ok) added++;
+    else { const e=await r.json().catch(()=>({})); toast(e.error||'Could not add mirror'); }
+  }
+  if(added){ toast(`Added ${added} mirror${added===1?'':'s'}`);
+    $('#m_number').value=''; $('#m_alias').value=''; loadMirrors(); }
+};
+async function mirrorSync(mid){
+  const m=MIRROR_LIST.find(x=>x.mirror_id===mid);
+  const cur=m?Number(m.equity).toFixed(2):'0';
+  const v=prompt(`Profit/loss vs the account's starting balance (from the ${m?FIRM_SHORT[m.firm]:''} dashboard).\nInferred: $${cur}`, cur);
+  if(v==null) return;
+  const num=parseFloat(v);
+  if(isNaN(num)){ toast('Enter a number'); return; }
+  await jfetch(`/api/mirrors/${encodeURIComponent(mid)}/update`,{method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({sync_balance:num})});
+  toast('Balance synced'); loadMirrors();
+}
+async function mirrorActivate(mid){
+  const ok=await confirmModal({title:'Activate funded account?',
+    body:'The firm issued the funded account for this passed eval. Resets tracking to the '+
+      'funded start and restores 1:1 copier scale. Tradeify parks as "waiting" for a fresh leader.',
+    confirmText:'Activate'});
+  if(!ok) return;
+  await jfetch(`/api/mirrors/${encodeURIComponent(mid)}/activate-funded`,{method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({})});
+  toast('Funded account activated'); loadMirrors();
+}
+async function mirrorPair(mid){
+  const v=prompt('Leader account id to pair with (a FRESH funded Express — see the Copier Plan):');
+  if(v==null) return;
+  const lid=parseInt(v,10);
+  if(isNaN(lid)){ toast('Enter the numeric account id'); return; }
+  const r=await jfetch(`/api/mirrors/${encodeURIComponent(mid)}/pair`,{method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify({leader_id:lid})});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); toast(e.error||'Could not pair'); return; }
+  toast('Paired for life'); loadMirrors();
+}
+async function mirrorDelete(mid){
+  const ok=await confirmModal({title:'Delete mirror?',
+    body:`Remove "${mid}" from TopHat tracking? The real account at the firm is unaffected.`,
+    confirmText:'Delete', danger:true});
+  if(!ok) return;
+  await jfetch(`/api/mirrors/${encodeURIComponent(mid)}`,{method:'DELETE'});
+  toast('Mirror removed'); loadMirrors();
+}
+
 // live updates
 function connectWS(){
   try{
@@ -1131,6 +1529,9 @@ function connectWS(){
   }catch(e){setInterval(refresh,5000);}
 }
 refresh(); connectWS(); setInterval(pollAuto, 15000);
+// keep Operations live while it's the visible page (plan + inferred states move
+// as reconciles land); cheap — two cached API reads
+setInterval(()=>{ if(CUR_PAGE==='ops') loadOps(); }, 20000);
 </script>
 </body>
 </html>

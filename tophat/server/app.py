@@ -19,10 +19,13 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
 from tophat.server import auth, service
+from tophat.services import mirror_sync
 from tophat.services.automation import Automation
 from tophat.store import credentials as creds_store
+from tophat.store import mirrors as mirrors_store
 from tophat.store import single_instance
 from tophat.store.config import load_settings, update_settings
+from tophat.store.firms import FIRMS, FOLLOWER_FIRMS
 
 STATIC_DIR = Path(__file__).parent / "static"
 PUBLIC_PATHS = {"/login", "/api/login"}
@@ -164,6 +167,118 @@ def create_app() -> FastAPI:
     @app.post("/api/accounts/{account_id}/payout-taken")
     def payout_taken(account_id: int):
         return service.mark_payout(account_id)
+
+    # --- mirror (follower) accounts: API-less firms tracked by inference ---
+    @app.get("/api/firms")
+    def list_firms():
+        from dataclasses import asdict as dc
+        return {"firms": {k: dc(p) for k, p in FIRMS.items()},
+                "follower_firms": sorted(FOLLOWER_FIRMS)}
+
+    @app.get("/api/mirrors")
+    def list_mirrors():
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        ms = mirrors_store.load_mirrors()
+        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        return {"mirrors": [mirror_sync.public_view(m) for m in ms.values()],
+                "hazards": mirror_sync.hazards(ms, today)}
+
+    @app.post("/api/mirrors")
+    def create_mirror(body: dict):
+        body = body or {}
+        try:
+            m = mirrors_store.create_mirror(
+                str(body.get("firm", "")),
+                account_number=str(body.get("account_number", "")),
+                alias=str(body.get("alias", "")),
+                leader_id=(int(body["leader_id"])
+                           if body.get("leader_id") not in (None, "") else None),
+                multiplier=(float(body["multiplier"])
+                            if body.get("multiplier") not in (None, "") else None),
+                phase=str(body.get("phase", "eval")),
+            )
+        except (ValueError, KeyError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return mirror_sync.public_view(m)
+
+    @app.post("/api/mirrors/{mirror_id}/update")
+    def update_mirror(mirror_id: str, body: dict):
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        try:
+            m = mirrors_store.patch_mirror(mirror_id, body or {}, today=today)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if m is None:
+            return JSONResponse({"error": "unknown mirror"}, status_code=404)
+        return mirror_sync.public_view(m)
+
+    @app.delete("/api/mirrors/{mirror_id}")
+    def remove_mirror(mirror_id: str):
+        if not mirrors_store.delete_mirror(mirror_id):
+            return JSONResponse({"error": "unknown mirror"}, status_code=404)
+        return {"ok": True}
+
+    @app.post("/api/mirrors/{mirror_id}/activate-funded")
+    def mirror_activate_funded(mirror_id: str, body: dict | None = None):
+        leader = (body or {}).get("leader_id")
+        try:
+            m = mirrors_store.with_mirror(
+                mirror_id, lambda x: mirror_sync.activate_funded(
+                    x, leader_id=int(leader) if leader not in (None, "") else None))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if m is None:
+            return JSONResponse({"error": "unknown mirror"}, status_code=404)
+        return mirror_sync.public_view(m)
+
+    @app.post("/api/mirrors/{mirror_id}/pair")
+    def mirror_pair(mirror_id: str, body: dict):
+        try:
+            m = mirrors_store.with_mirror(
+                mirror_id, lambda x: mirror_sync.pair_waiting(x, int(body["leader_id"])))
+        except (ValueError, KeyError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        if m is None:
+            return JSONResponse({"error": "unknown mirror"}, status_code=404)
+        return mirror_sync.public_view(m)
+
+    # --- copier plan: the daily Tradecopia edit list ---
+    def _today_et() -> str:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
+    @app.get("/api/copier-plan")
+    def get_copier_plan():
+        from tophat.services import copier_plan as cp
+        plan = cp.build_today_plan(app.state.brokers, _today_et())
+        return cp.plan_to_dict(plan)
+
+    @app.post("/api/copier-plan/apply")
+    def apply_copier_plan():
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        from tophat.services import copier_plan as cp
+        now = datetime.now(ZoneInfo("America/New_York"))
+        plan = cp.build_today_plan(app.state.brokers, now.strftime("%Y-%m-%d"))
+        cp.apply_plan(plan, applied_at=now.strftime("%Y-%m-%d %H:%M:%S ET"))
+        service.invalidate_snapshot_cache()
+        return cp.plan_to_dict(plan)
+
+    @app.post("/api/mirrors/{mirror_id}/payout-taken")
+    def mirror_payout_taken(mirror_id: str):
+        paid = {}
+
+        def do(x):
+            paid["amount"] = mirror_sync.mark_mirror_payout(x)
+
+        m = mirrors_store.with_mirror(mirror_id, do)
+        if m is None:
+            return JSONResponse({"error": "unknown mirror"}, status_code=404)
+        return {**mirror_sync.public_view(m), "paid": paid.get("amount", 0.0)}
 
     @app.get("/api/settings")
     def get_settings():
