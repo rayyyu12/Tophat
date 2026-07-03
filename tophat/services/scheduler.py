@@ -5,6 +5,11 @@ Rules (see docs/STRATEGY.md / docs/BUILD_PLAN.md):
   - A pending day-2 recovery (mid-sequence) takes priority for a nuke slot.
   - Otherwise nuke slots go round-robin to the funded accounts that have waited
     longest since their last nuke.
+  - At most `max_evals_per_day` evals trade on any day. By default the eval slots
+    run a DEPTH-FIRST PIPELINE: the most-advanced evals (highest `days_traded`) are
+    driven to pass/blow before fresh ones start, which front-loads funded accounts
+    at no cost to per-account pass probability (docs/PROBABILITY.md §6). Set
+    `eval_pipeline_depth_first=False` to fall back to round-robin (spread evenly).
   - Funded accounts not nuking and past their nuke (or in a flip cycle) flip, each
     assigned a staggered entry time so the fleet's flips don't all fire together.
   - Nuke-cycle accounts that don't win a nuke slot idle (they can't flip yet).
@@ -17,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tophat.engine import TERMINAL, AccountState, Phase, is_nuke_cycle
+from tophat.store.atomic import atomic_write_text
 from tophat.store.config import TopHatSettings
 from tophat.store.paths import SCHEDULE_FILE
 
@@ -40,13 +46,12 @@ def load_schedule(path: Path = SCHEDULE_FILE) -> ScheduleState:
 
 
 def save_schedule(s: ScheduleState, path: Path = SCHEDULE_FILE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "last_nuke_date": {str(k): v for k, v in s.last_nuke_date.items()},
         "last_eval_date": {str(k): v for k, v in s.last_eval_date.items()},
         "last_run_date": s.last_run_date,
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, indent=2))
 
 
 @dataclass
@@ -94,16 +99,23 @@ def assign_day(
             flip_accounts.append(aid)
 
     # Eval batching: copy at most `max_evals_per_day` evals on any day (STRATEGY §1 —
-    # limits correlated eval exposure). Priority: longest wait since last eval, then
-    # earliest enabled (so a freshly enabled account waits, not an already-active one),
-    # then id. The rest idle until a slot frees up. Mirrors the nuke cap.
-    eval_candidates.sort(key=lambda a: (sched.last_eval_date.get(a, ""), enabled_at.get(a, 0.0), a))
+    # limits correlated eval exposure). Depth-first pipeline (default): slots go to the
+    # MOST-ADVANCED evals first (highest days_traded) so in-flight accounts are driven to
+    # pass/blow before fresh ones start — front-loads funded accounts at no probability
+    # cost (docs/PROBABILITY.md §6). Round-robin fallback spreads slots by longest wait.
+    # Ties either way: longest since last eval, earliest enabled (a freshly enabled
+    # account waits rather than bumping an active one), then id.
+    if settings.eval_pipeline_depth_first:
+        eval_candidates.sort(key=lambda a: (
+            -accounts[a].days_traded, sched.last_eval_date.get(a, ""), enabled_at.get(a, 0.0), a))
+    else:
+        eval_candidates.sort(key=lambda a: (sched.last_eval_date.get(a, ""), enabled_at.get(a, 0.0), a))
     eval_slots = max(0, int(settings.max_evals_per_day))
     evaling = set(eval_candidates[:eval_slots])
     for aid in eval_candidates:
         if aid in evaling:
             out[aid] = Assignment(aid, "eval", settings.nuke_entry_time,
-                                  f"eval slot ({eval_slots}/day)")
+                                  f"eval day {accounts[aid].days_traded + 1} ({eval_slots}/day)")
             sched.last_eval_date[aid] = today
         else:
             out[aid] = Assignment(aid, "idle", "", "waiting for an eval slot")

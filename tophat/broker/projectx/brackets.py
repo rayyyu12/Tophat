@@ -18,6 +18,11 @@ def pts_to_ticks(points: float) -> int:
 
 def plan_to_order(plan: TradePlan) -> dict:
     side = SIDE_BID if plan.direction == 1 else SIDE_ASK
+    # manual_stop=False (within one stop of the trailing floor): place NO protective
+    # stop and let Topstep auto-liquidate at the MLL. A manual stop there would sit
+    # at/below the floor and fill messily (docs/PROBABILITY.md §0, STRATEGY §6.2).
+    stop_bracket = ({"ticks": pts_to_ticks(plan.stop_pts), "type": ORDER_STOP}
+                    if plan.manual_stop else None)
     return {
         "type": ORDER_MARKET,
         "side": side,
@@ -26,6 +31,6 @@ def plan_to_order(plan: TradePlan) -> dict:
         "stopPrice": None,
         "trailPrice": None,
         "isAutomated": True,
-        "stopLossBracket": {"ticks": pts_to_ticks(plan.stop_pts), "type": ORDER_STOP},
+        "stopLossBracket": stop_bracket,
         "takeProfitBracket": {"ticks": pts_to_ticks(plan.target_pts), "type": ORDER_LIMIT},
     }

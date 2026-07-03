@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import threading
 from pathlib import Path
 
 from tophat.engine import AccountState, Phase
+from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import STATES_FILE
 
 
@@ -58,6 +60,12 @@ def _dict_to_state(d: dict) -> AccountState:
     )
 
 
+# Serializes writers within this process. Concurrent load→mutate→save cycles
+# (automation thread, WS snapshot builds, API threadpool handlers) would otherwise
+# clobber each other's entries — e.g. a snapshot save losing a just-recorded fire.
+_IO_LOCK = threading.Lock()
+
+
 def load_all(path: Path = STATES_FILE) -> dict[int, AccountState]:
     if not path.exists():
         return {}
@@ -65,10 +73,28 @@ def load_all(path: Path = STATES_FILE) -> dict[int, AccountState]:
     return {int(k): _dict_to_state(v) for k, v in raw.items()}
 
 
-def save_all(states: dict[int, AccountState], path: Path = STATES_FILE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _write(states: dict[int, AccountState], path: Path) -> None:
     payload = {str(k): _state_to_dict(v) for k, v in states.items()}
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, indent=2))
+
+
+def save_all(states: dict[int, AccountState], path: Path = STATES_FILE) -> None:
+    with _IO_LOCK:
+        _write(states, path)
+
+
+def merge_save(states: dict[int, AccountState], ids,
+               path: Path = STATES_FILE) -> None:
+    """Persist ONLY `ids`, merged over the current on-disk contents.
+
+    Use this from any writer that changed a subset of accounts, so it can't
+    overwrite entries another writer updated since this writer's load()."""
+    with _IO_LOCK:
+        disk = load_all(path)
+        for i in ids:
+            if i in states:
+                disk[i] = states[i]
+        _write(disk, path)
 
 
 def get_or_create(states: dict[int, AccountState], account_id: int) -> AccountState:

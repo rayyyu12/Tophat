@@ -42,7 +42,7 @@ class AccountConfig:
     eval_contracts: int = 5
     eval_target_dollars: float = 3_000.0
     eval_target_pts: float = 15.5
-    eval_stop_pts: float = 9.5
+    eval_stop_pts: float = 10.0          # = full $1,000 DLL at 5 minis (docs/STRATEGY.md §6.2)
     eval_min_days: int = 2
 
     # Funded sizing: nukes use the full funded size (reachable point target),
@@ -105,6 +105,7 @@ class TradePlan:
     target_pts: float
     stop_pts: float
     label: str
+    manual_stop: bool = True   # False near the floor -> no stop leg, let Topstep auto-liquidate
 
 
 @dataclass(frozen=True)
@@ -127,6 +128,27 @@ def eod_floor(cfg: AccountConfig, state: AccountState) -> float:
 
 def is_dead(cfg: AccountConfig, state: AccountState) -> bool:
     return state.equity <= eod_floor(cfg, state)
+
+
+def room_to_floor(cfg: AccountConfig, state: AccountState,
+                  balance: float | None = None) -> float:
+    """Dollars from the live balance (or tracked equity) down to the EOD trailing floor."""
+    bal = state.equity if balance is None else balance
+    return bal - eod_floor(cfg, state)
+
+
+def should_omit_stop(cfg: AccountConfig, state: AccountState, plan: TradePlan,
+                     balance: float | None = None) -> bool:
+    """True when remaining room to the trailing floor is <= the day's stop.
+
+    Topstep's Combine MLL is breached in real time on UNREALIZED P&L (docs/PROBABILITY.md
+    §0), so within one stop of the floor a manual stop would sit at/below the floor and
+    fill messily. Instead we place NO manual stop and let Topstep auto-liquidate at the
+    floor — a clean, certain blow. Every leg's stop is the full $1,000 DLL, so this trips
+    when the account is ~$1,000 or less from blowing.
+    """
+    stop_dollars = plan.stop_pts * plan.contracts * cfg.point_value
+    return room_to_floor(cfg, state, balance) <= stop_dollars + 1e-9
 
 
 def is_nuke_cycle(payouts_taken: int) -> bool:

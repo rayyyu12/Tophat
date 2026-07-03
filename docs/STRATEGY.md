@@ -11,7 +11,7 @@
 | Decision | Locked choice | Why |
 |---|---|---|
 | **Account** | **Topstep 50K, WITH DLL** (~$85/ticket) | +930% EV/ticket vs ~+558% for the 150K. Cheaper, easier nuke, 2 full nuke tries, easier eval. (See §4.) |
-| **Eval size** | **5 minis**, 15.5pt / 9.5pt bracket, $3,000 target | The only statistically-significant edge (+7.6pp). 1 trade/day, drive direction. |
+| **Eval size** | **5 minis**, 15.5pt target / **10pt ($1,000) stop**, $3,000 target | The only statistically-significant edge (+7.6pp). 1 trade/day, drive direction. Stop = full DLL (see §6.2). |
 | **Funded — nuke** | **2 minis, $3,200 target** (80pt / 25pt stop), day-2 recovery to ~$4,200 (105pt / 25pt) | Near-optimal given the $2,000 payout cap. ~45% to land the first payout over 2 days. |
 | **Funded — flip** | **1 mini, $170 target** (8.5pt), stop = full $1,000 DLL (50pt) | Same win probability as 2 minis, **half the commission**. A winning-day generator, not a profit center. |
 | **Lifecycle** | nuke + 4 flips → 5 flips → re-nuke + 4 flips → 5 flips, **retire at 4 payouts** | Harvest below the ~5-payout live-account trigger. Re-nuke only gambled after 2 payouts are banked. |
@@ -123,12 +123,15 @@ Ordered roughly by promise. All require pre-registered IS/OOS testing to avoid t
    `funded_initial_balance=0`, per-account `base_balance`, and balance-based phase inference. Phases
    `passed` (green) and `blown` (red) are surfaced on the dashboard.
 
-2. **Trailing-drawdown mechanic:** ✅ **CONFIRMED end-of-day.** Unrealized intraday P&L does *not*
-   move the DLL or the max-loss floor; they update only on the daily close, then the new day starts.
-   This is favorable — no risk of an intraday spike-then-give-back tripping the trailing floor, and the
-   engine already models it via `peak_equity_eod`. (The eval pass rate is still somewhat sensitive to
-   the exact loss-day size vs trailing room — a $950 vs $1,000 losing day shifts 50K eval pass ~52% vs
-   ~39% — but that's a geometry detail, not the intraday/EOD ambiguity, which is now settled.)
+2. **Trailing-drawdown mechanic:** ⚠️ **CORRECTED 2026-06-24.** The trailing floor only *ratchets up*
+   at end-of-day (unrealized gains don't trail it up) and **locks at the $50,000 starting balance**.
+   BUT the MLL is **breached in real time on UNREALIZED P&L** — hit the floor intraday and you are
+   liquidated immediately (help.topstep.com, confirmed). So near the floor your *effective* stop is the
+   remaining room, not your strategy stop. We now run a **$1,000 (10pt) stop = the full DLL** and set
+   **no manual stop when room ≤ $1,000** (let auto-liquidation blow it cleanly). With a $1,000 stop the
+   account is always a whole number of "$1,000 lives" from the floor, so the intraday/EOD distinction
+   vanishes and the eval pass rate is a clean **~42%** — the earlier "~52% (at a $950 loss-day)" figure
+   was an artifact of an EOD-only floor check and is **retired**. See [PROBABILITY.md](PROBABILITY.md) §0.
 3. **Reconcile the engine to this spec** — see [BUILD_PLAN.md](BUILD_PLAN.md) §2. `tophat/engine.py`
    still defaults to a $4,000 nuke and a 2-mini $150 flip; the backtested numbers only transfer once
    the live brackets match.

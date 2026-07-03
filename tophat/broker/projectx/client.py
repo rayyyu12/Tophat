@@ -5,6 +5,7 @@ Docs: https://gateway.docs.projectx.com/
 
 from __future__ import annotations
 
+import logging
 import os
 import time
 from datetime import datetime
@@ -12,6 +13,9 @@ from zoneinfo import ZoneInfo
 
 import httpx
 
+from tophat.debuglog import redact
+
+_dbg = logging.getLogger("tophat.projectx")  # [debuglog]
 ET = ZoneInfo("America/New_York")
 DEFAULT_API_URL = "https://api.topstepx.com"
 DEFAULT_RTC_URL = "https://rtc.topstepx.com"
@@ -121,6 +125,9 @@ class ProjectXClient:
         )
         if not bars:
             return 0
+        # retrieveBars returns NEWEST-first; sort oldest-first so [0] is the
+        # 09:30 bar and [-1] the 09:44 bar — unsorted, the drive read is inverted.
+        bars = sorted(bars, key=lambda b: b["t"])
         or_open, or_close = bars[0]["o"], bars[-1]["c"]
         if or_close > or_open:
             return 1
@@ -151,19 +158,34 @@ class ProjectXClient:
         headers = {"accept": "text/plain", "Content-Type": "application/json"}
         if auth and self._token:
             headers["Authorization"] = f"Bearer {self._token}"
+        t0 = time.perf_counter()                                            # [debuglog]
         resp = self._client.post(path, json=body, headers=headers)
         if resp.status_code == 401 and auth:
+            _dbg.warning("401 on %s — re-authenticating", path)             # [debuglog]
             self.login()
             headers["Authorization"] = f"Bearer {self._token}"
             resp = self._client.post(path, json=body, headers=headers)
-        if resp.status_code == 429:
-            # Rate limited — honor Retry-After (bounded) and retry once.
+        # Rate limited: honor Retry-After, else exponential backoff (0.5/1/2s), and
+        # retry a few times so a transient burst self-heals instead of surfacing a 429.
+        for attempt in range(3):
+            if resp.status_code != 429:
+                break
             try:
-                wait = float(resp.headers.get("Retry-After", "1") or 1)
+                wait = float(resp.headers.get("Retry-After", "") or 0)
             except ValueError:
-                wait = 1.0
-            time.sleep(min(max(wait, 0.5), 5.0))
+                wait = 0.0
+            wait = wait or 0.5 * (2 ** attempt)
+            wait = min(max(wait, 0.5), 5.0)
+            _dbg.warning("429 on %s — backoff %.2fs, retry %d/3", path, wait, attempt + 1)  # [debuglog]
+            time.sleep(wait)
             resp = self._client.post(path, json=body, headers=headers)
+        # [debuglog] one line per request: path, status, latency. Body only on error
+        # (redacted) — success bodies can be large and may echo secrets on auth calls.
+        elapsed = (time.perf_counter() - t0) * 1000
+        if resp.status_code >= 400:
+            _dbg.warning("POST %s -> %d (%.0fms) body=%s", path, resp.status_code, elapsed, redact(body))
+        else:
+            _dbg.debug("POST %s -> %d (%.0fms)", path, resp.status_code, elapsed)
         try:
             data = resp.json()
         except Exception as exc:

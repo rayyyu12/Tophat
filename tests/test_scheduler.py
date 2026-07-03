@@ -93,6 +93,33 @@ def test_max_evals_per_day_float_is_coerced():
     assert sum(a.action == "eval" for a in out.values()) == 2
 
 
+def test_eval_pipeline_prioritizes_most_advanced():
+    # Depth-first: an in-flight eval (more days traded) takes the slot over a fresh one,
+    # so accounts are driven to completion instead of spread thin (docs/PROBABILITY.md §6).
+    accts = {1: _eval(days_traded=0), 2: _eval(days_traded=2), 3: _eval(days_traded=1)}
+    s = TopHatSettings(); s.max_evals_per_day = 1
+    out, _ = assign_day(accts, s, "2026-06-22", ScheduleState())
+    assert out[2].action == "eval"                  # furthest along wins the lone slot
+    assert out[1].action == "idle" and out[3].action == "idle"
+    assert "eval day 3" in out[2].note              # note reflects pipeline position
+
+
+def test_eval_pipeline_two_slots_take_two_most_advanced():
+    accts = {1: _eval(days_traded=0), 2: _eval(days_traded=3), 3: _eval(days_traded=2)}
+    out, _ = assign_day(accts, S, "2026-06-22", ScheduleState())   # 2 slots
+    assert out[2].action == "eval" and out[3].action == "eval"     # the two in-flight
+    assert out[1].action == "idle"                                 # fresh one waits its turn
+
+
+def test_eval_round_robin_when_pipeline_disabled():
+    accts = {1: _eval(days_traded=0), 2: _eval(days_traded=2)}
+    s = TopHatSettings(); s.max_evals_per_day = 1; s.eval_pipeline_depth_first = False
+    sched = ScheduleState(last_eval_date={2: "2026-06-21"})  # #2 ran recently
+    out, _ = assign_day(accts, s, "2026-06-22", sched)
+    assert out[1].action == "eval"                  # round-robin: #1 (never ran) goes first
+    assert out[2].action == "idle"                  # depth-first would have picked #2
+
+
 def test_nuke_slot_tiebreak_prefers_earlier_enabled():
     accts = {1: funded(), 2: funded()}   # both fresh, both need their first nuke
     # #1 has the lower id but was enabled most recently -> #2 (already queued) keeps the slot.

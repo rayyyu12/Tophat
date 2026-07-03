@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 import uuid
+from datetime import date
 
 from tophat.broker.base import BrokerAccount
 from tophat.broker.projectx.brackets import plan_to_order
@@ -15,6 +16,7 @@ class ProjectXBroker:
     def __init__(self, client: ProjectXClient | None = None) -> None:
         self._client = client or ProjectXClient()
         self._nq_contract_id: str | None = None
+        self._nq_resolved_on: str = ""
 
     @property
     def client(self) -> ProjectXClient:
@@ -39,8 +41,13 @@ class ProjectXBroker:
         ]
 
     def resolve_nq_contract(self) -> str:
-        if not self._nq_contract_id:
+        # Re-resolve once per day: the server runs for months unattended and the
+        # active NQ contract rolls quarterly — a stale cached id would place
+        # orders on the expired contract.
+        today = date.today().isoformat()
+        if not self._nq_contract_id or self._nq_resolved_on != today:
             self._nq_contract_id = self._client.active_nq_contract()["id"]
+            self._nq_resolved_on = today
         return self._nq_contract_id
 
     def drive_direction(self, contract_id: str, *, live: bool = False) -> int:

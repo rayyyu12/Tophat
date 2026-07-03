@@ -1,69 +1,90 @@
 # TopHat NQ — Probability, EV & Risk-of-Ruin
 
-> Monte Carlo over the **locked 50K-DLL lifecycle** (N = 300,000 per scenario, seed 7).
-> Reproducible: `python research/probability_report.py`. Win probabilities come from the
-> driftless-barrier law for **coinflip** and the 251-day RTH backtest for **drive**
-> (see [STRATEGY.md](STRATEGY.md)). This model **validates** against the backtest: it
-> reproduces both the ~52% (at a $950 loss-day) and ~39% (at $1,000) eval pass rates and
-> the ~45% by-day-2 nuke landing.
+> Monte Carlo over the **locked 50K-DLL lifecycle**, corrected for the real
+> **intraday** Maximum Loss Limit. Reproducible: `python research/probability_intraday.py`
+> (N = 200,000, seed 7). Win probabilities are the **real (target, stop) barriers
+> resolved bar-by-bar** on the 251-day 1s RTH drive cache (same data as backtest.py).
+
+## 0. CORRECTION (2026-06-24) — intraday MLL + $1,000 stop
+
+Two things changed versus the earlier version of this doc, after confirming the
+mechanics against help.topstep.com:
+
+1. **The Combine MLL breaches in real time on UNREALIZED P&L** — *"monitored in
+   real time… both realized and unrealized P&L count… liquidated immediately."*
+   The floor only **ratchets up at end of day** and **locks at the $50,000 start**
+   once your EOD balance reaches $52,000. So near the floor your *effective* stop
+   is the remaining room, not your 9.5pt strategy stop. The earlier models
+   (`probability_report.py`, `monte_carlo.py`, `run_campaign_compare.py`) checked
+   the floor only at EOD after booking a full-stop loss, which inflated near-floor
+   recovery — this is what produced the bogus "~52% optimistic" eval pass rate.
+
+2. **Stop is now $1,000 (10pt at 5 minis) = the full DLL**, not the 9.5pt $950
+   stop. When remaining room ≤ $1,000 we set **no manual stop** and let Topstep
+   auto-liquidate at the floor (a non-win there = a clean, certain blow). A
+   $1,000 stop is exactly half the $2,000 MLL, so the account is always a whole
+   number of "$1,000 lives" from the floor (2 → 1 → dead) and **never sits in a
+   fractional-room state** — so intraday-MLL and EOD-MLL now give the *same* eval
+   pass rate (42.4%). The correction's real effect: discard the optimistic ~52%
+   figure, and a modest cut to funded EV (the re-nuke and post-withdrawal flips
+   start with less room).
+
+**Net:** eval pass **~42%** (was quoted ~39% conservative / ~52% optimistic),
+EV/ticket **+$530 / +623% ROI** (was +$514 / +$791).
+
+---
 
 ## Model & assumptions
 
 | Leg | Size | Bracket | Net win | Net loss | Notes |
 |---|---|---|---|---|---|
-| **Eval** | 5 minis | 15.5 / 9.5 pt | **+$1,500** | **−$1,000** | target $1,550 gross − ~$50 commission/slippage = ~$1,500 net; pass = +$3,000 over ≥2 days |
+| **Eval** | 5 minis | 15.0 / **10.0** pt | **+$1,500** | **−$1,000** | $1,500 = 50% consistency cap; **stop = full $1,000 DLL**; pass = +$3,000 over ≥2 days |
 | **Nuke** | 2 minis | 80 / 25 pt | +$3,150 | −$1,000 | $3,200 gross target |
-| **Re-nuke (day-2 recovery)** | 2 minis | 105 / 25 pt | +$4,150 | −$1,000 | recovers the day-1 loss + nets the nuke |
+| **Re-nuke (day-2)** | 2 minis | 105 / 25 pt | +$4,150 | −$1,000 | recovers the day-1 loss + nets the nuke |
 | **Flip** | 1 mini | 8.5 / 50 pt | +$150 | −$1,000 | $170 gross; risks the full $1,000 DLL |
 
-- **Eval MLL:** $2,000 trailing → floor starts $48,000, trails up, locks at the $50,000 base.
-- **Funded MLL:** $2,000 trailing from a $0 start → floor −$2,000, **locks to breakeven ($0)** once the nuke is banked.
-- **Lifecycle:** Payout 1 = nuke + 4 flips · Payout 2 = 5 flips · Payout 3 = re-nuke + 4 flips · Payout 4 = 5 flips → **retire at 4 payouts** (each payout = 5 winning days; withdraw `min(50% of profit, $2,000)`).
-- Win/loss is decided by the **price** bracket (barrier); dollar amounts are **net** of commission/slippage.
+- **MLL (both phases):** $2,000 trailing, **breached intraday on unrealized P&L**,
+  ratchets up at EOD only, **locks at the starting balance** (eval → $50,000 floor;
+  funded $0 start → $0 / breakeven floor).
+- **Effective stop each day = min($1,000, room-to-floor).** Room ≤ $1,000 ⇒ a
+  non-win is a certain blow (auto-liquidation).
+- **Consistency rule (real Topstep):** best day ÷ total profit ≤ 50%, target
+  auto-raises to `best/0.50` if exceeded ⇒ **pass iff days ≥ 2 and total ≥
+  max($3,000, 2 × best_day)**. Modeled with a final-day target shrink.
 
 ---
 
-## 1. Per-trade odds & expected value (net $)
+## 1. Per-trade odds & expected value (net $, drive, data-resolved)
 
-| Bracket | Coinflip P(win) | Drive P(win) | EV/trade (coinflip) | EV/trade (drive) |
-|---|---|---|---|---|
-| Eval | 38.0% | **45.6%** | −$50 | **+$140** |
-| Nuke | 23.8% | **27.9%** | −$12 | **+$158** |
-| Re-nuke (recovery) | 19.2% | 22.5%¹ | −$10 | +$159 |
-| Flip | 85.5% | **88.4%** | −$17 | **+$17** |
+| Bracket | Drive P(win) | EV/trade |
+|---|---|---|
+| Eval ($1,500 day, 15/10pt) | **46.6%** | +$232 |
+| Nuke (80/25pt) | **27.9%** | +$159 |
+| Re-nuke (105/25pt) | 23.6% | +$209 |
+| Flip (8.5/50pt) | **88.4%** | +$18 |
 
-¹ Re-nuke drive is extrapolated from the nuke edge (not separately backtested).
-The **flip is ~breakeven by design** — it banks winning days cheaply, it is not a profit center. The **nuke is the profit engine**.
+The **flip is ~breakeven by design** — it banks winning days cheaply. The **nuke
+is the profit engine.**
 
 ---
 
-## 2. Eval — odds of passing (50K, $3k target, $2k MLL, $1k DLL)
+## 2. Eval — odds of passing (50K, $3k target, $2k MLL, $1k stop)
 
-| Scenario | Pass | Blow | Pass in exactly 2 days | Avg days when it passes |
-|---|---|---|---|---|
-| Coinflip, fixed target | 26.2% | 73.8% | 14.4% | 3.5 |
-| **Drive, fixed target** | **38.8%** | 61.2% | **20.8%** | 3.5 |
-| Coinflip, adaptive target | 27.1% | 72.9% | 14.3% | 4.0 |
-| Drive, adaptive target | 40.2% | 59.8% | 20.7% | 4.0 |
+Conservative $1,500/day policy with final-day shrink (`research/probability_intraday.py`):
 
-**Loss-day size is the single biggest eval lever** (the trailing-floor geometry, per STRATEGY §6):
+| Model | Pass | Blow | E[days · pass] | Pass in 2 days | Pass in ≤4 days |
+|---|---|---|---|---|---|
+| **Corrected (intraday MLL)** | **42.4%** | 57.6% | 3.44 | 21.6% | 34.6% |
+| old EOD model, $1,000 stop | 42.5% | 57.5% | 3.45 | 21.6% | 34.6% |
 
-| Realized loss-day (drive, fixed) | Eval pass |
-|---|---|
-| $950 (raw stop, no slippage) | **51.7%** |
-| $1,000 (stop + ~$50 slippage) | **38.7%** |
-| $1,050 | 38.2% |
+> The two agree because a $1,000 stop leaves no fractional-room state to mishandle.
+> **The discarded artifact was the $950-stop / EOD model, which read ~52%.**
 
-> **Takeaway:** ~1 in 5 evals (drive) pass in the ideal 2 days; the average passer takes ~3.5 days.
-> Keeping the loss day at the raw $950 stop (tight slippage control) lifts pass odds from ~39% to ~52%
-> — worth more than any other eval tweak.
-
-### Adaptive daily target (your "only need $1,000/$500" point)
-Once you are within one win of the $3,000 target, you can shrink that day's target so the day's
-win probability rises (a $1,000 day = 10 pt target ≈ 49% coinflip vs 38% at 15.5 pt). Modeled
-benefit is **modest: +1.4 pp** (drive 38.8% → 40.2%), because most passes already come from two
-full-bracket wins. It is a real, free refinement but a minor one. **Not yet in the engine** — see
-"Open items" below.
+**Target sizing is settled: keep ~$1,500/day.** Going bigger is dominated — the
+consistency rule auto-raises the bar with your best day, so a bigger target can't
+shorten the path after a loss (it's mathematically impossible to pass in 2 winning
+days after any loss) and only lowers your daily win rate. Aggressive $2,000/day
+drops the pass rate ~10pp with no speed gain (`research/eval_scheduling_and_target.py`).
 
 ---
 
@@ -71,69 +92,82 @@ full-bracket wins. It is a real, free refinement but a minor one. **Not yet in t
 
 | | 1st-try | By day 2 (base → recovery) |
 |---|---|---|
-| Coinflip | 23.8% | 38.5% |
-| **Drive** | **27.9%** | **44.1%** |
+| **Drive** | **27.9%** | **~44.5%** |
 
-A nuke gets **two attempts** (day-1 base, then the wider day-2 recovery) before the $2,000 MLL is
-spent. Drive lands it ~44% of the time across the two days.
-
----
-
-## 4. Funded — full-lifecycle odds & risk of ruin
-
-Per **funded** account, simulated to retirement (4 payouts) or ruin:
-
-| Metric | Coinflip | **Drive** |
-|---|---|---|
-| Reach payout 1 | 38.0% | **43.8%** |
-| Reach payout 2 | 32.0% | 39.6% |
-| Reach payout 3 | 9.8% | 14.5% |
-| Reach payout 4 (retire) | 9.0% | **13.9%** |
-| **Ruin before any payout** | 62.0% | **56.2%** |
-| Expected payouts / account | 0.89 | **1.12** |
-| Expected $ withdrawn / account | $1,167 | **$1,546** |
-
-> **Reading this:** most funded accounts **die on a nuke** — reaching payout 1 (~44% drive) is
-> essentially "did the nuke land." The big drop from payout 2 (40%) to payout 3 (15%) is the
-> **re-nuke** at payout 3 killing most survivors. Only ~14% retire with all 4 payouts; the fleet
-> **averages ~1.1 payouts**. That is by design: each funded account is a cheap, high-variance bet,
-> not a sure annuity.
+A nuke gets two attempts (day-1 base, then the wider day-2 recovery) before the
+$2,000 MLL is spent. The nuke's room never drops below its $1,000 stop, so the
+intraday correction does not change it.
 
 ---
 
-## 5. End-to-end EV per eval ticket (drive)
+## 4. Funded — full-lifecycle odds & risk of ruin (intraday MLL)
 
-| | Conservative ($1,000 loss-day) | Optimistic ($950 loss-day, = backtest) |
-|---|---|---|
-| P(eval pass) | 38.7% | ~52% |
-| E[$ withdrawn] / funded account | $1,546 | $1,546 |
-| **EV per $85 eval ticket** | **+$514** | **~+$791** |
-| **ROI** | **+605%** | **~+930%** |
+Per funded account, simulated to retirement (4 payouts) or ruin:
 
-The optimistic column matches [STRATEGY.md](STRATEGY.md) §4 (+$791 / +930%). The spread is driven
-almost entirely by the eval loss-day assumption. **Either way the ticket is strongly +EV** — the
-structural asymmetry (cheap eval → multi-payout funded account) is the engine, exactly as the
-coinflip controls predict.
+| Metric | **Drive (corrected)** |
+|---|---|
+| Reach payout 1 | **44.5%** |
+| Reach payout 2 | 38.1% |
+| Reach payout 3 | 11.0% |
+| Reach payout 4 (retire) | **10.4%** |
+| Ruin before any payout | **55.5%** |
+| Expected payouts / account | **1.04** |
+| Expected $ withdrawn / account | **$1,450** |
+
+> Most funded accounts die on a nuke (reach payout 1 ≈ "did the nuke land"). The
+> big drop from payout 2 → 3 is the **re-nuke** killing most survivors — and the
+> intraday correction makes it slightly harsher, because the re-nuke and the
+> post-withdrawal flip cycles start with less room than the old model assumed.
 
 ---
 
-## 6. Risk of ruin — account vs. bankroll
+## 5. End-to-end EV per eval ticket (drive, corrected)
 
-- **Single-account "ruin" is high and expected** (~56% blow before payout 1). That is not a bankroll
-  risk — it is the cost of a +EV lottery ticket.
-- **Bankroll ruin** (going broke across reinvested tickets) is the number that matters, and it
-  depends on sizing. Per STRATEGY.md, a **$5,000+ bankroll keeps modeled ruin < 1%**; real ruin is
-  somewhat higher because cross-account correlation is unmodeled — keep a buffer, don't run to the edge.
-- **Decorrelation controls** that hold ruin down: ≤1 nuke/day spread across the week, ≤2 evals/day,
-  and staggered flip entries (all enforced by the scheduler).
+| | Value |
+|---|---|
+| P(eval pass) | **42.4%** |
+| E[$ withdrawn] / funded account | $1,450 |
+| **EV per $85 eval ticket** | **+$530** |
+| **ROI** | **+623%** |
+
+The structural asymmetry (cheap eval → multi-payout funded account) is still the
+engine and still strongly +EV. The earlier "+930%" headline used the inflated
+~52% eval pass and should be retired; **+623% is the honest number.**
+
+---
+
+## 6. Throughput — 10 evals, depth-first pipeline
+
+Per-account pass probability is identical under any schedule (~4.2 funded/10).
+Scheduling changes only calendar latency. Depth-first (advance the most-progressed
+eval to completion, ≤2 trades/day) vs the time to fully clear a batch:
+
+| Slots/day | Funded / 10 | 1st pass | 3rd pass | **All 10 resolved** |
+|---|---|---|---|---|
+| 2 | 4.24 | day 4.5 | day 10.7 | **day 17.1 (~3.4 wk)** |
+| 3 | 4.25 | day 3.5 | day 7.7 | **day 12.2 (~2.4 wk)** |
+
+(Trading days; "resolved" = passed or blown.) Slots/day is the throughput lever —
+same expected passes, more correlation. Cap at 2/day staggered across the two
+validated edge windows (09:45 / 10:15 ET) to keep the daily pair decorrelated.
 
 ---
 
 ## Open items / caveats
 
-- **Adaptive eval target** (§2) is modeled but **not implemented** in `engine.py` (decide() always
-  uses the full 15.5 pt eval bracket). Benefit is small (+~1.4 pp); implement if desired.
-- Re-nuke **drive** win-rate is extrapolated, not separately backtested.
-- Model assumes per-day independence (no cross-account correlation, no calendar/news effects) and a
-  flat ~$50 commission/slippage buffer — same caveats as the backtest (STRATEGY §2).
-- Numbers regenerate with `python research/probability_report.py` (local-only script).
+- **Live execution now matches the model (2026-06-24):** the eval stop is $1,000
+  (10pt) in config/engine, and both fire paths (`server/service.py`,
+  `services/runner.py`) drop the manual stop when room ≤ the day's stop via
+  `engine.should_omit_stop`, letting Topstep auto-liquidate at the floor
+  (`brackets.plan_to_order` omits `stopLossBracket`). Tests in
+  `tests/test_near_floor_stop.py`.
+- **Legacy MC scripts** (`probability_report.py`, `monte_carlo.py`,
+  `run_campaign_compare.py`) retain the EOD-only floor check; they are superseded
+  by `research/probability_intraday.py` for the eval/EV numbers.
+- Re-nuke drive win-rate is data-resolved (105/25pt) rather than separately
+  twoday-backtested.
+- Model assumes per-day independence (no cross-account correlation, no calendar/
+  news effects) and a flat ~$50 commission/slippage buffer. Entry slippage on
+  near-floor trades would push those (already rare) recoveries lower still.
+- **Feb-2026 Topstep "Consistency Path"** (3-day XFA progression at 40%) is not
+  yet modeled — a funded-stage payout option that may change the optimal lifecycle.

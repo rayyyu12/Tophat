@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from tophat.engine import AccountConfig
+from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import SETTINGS_FILE
 
 
@@ -25,7 +26,7 @@ class TopHatSettings:
     eval_contracts: int = 5
     eval_target_dollars: float = 3_000.0
     eval_target_pts: float = 15.5
-    eval_stop_pts: float = 9.5
+    eval_stop_pts: float = 10.0         # = full $1,000 DLL at 5 minis (docs/STRATEGY.md §6.2)
     eval_min_days: int = 2
 
     funded_contracts: int = 2          # nukes
@@ -42,6 +43,8 @@ class TopHatSettings:
         default_factory=lambda: ["09:45", "10:00", "10:15", "10:30", "10:45"])
     max_nukes_per_day: int = 1         # decorrelation guarantee
     max_evals_per_day: int = 2         # copy ≤2 evals/day (STRATEGY §1, correlated-exposure cap)
+    eval_pipeline_depth_first: bool = True  # slots go to most-advanced evals first (front-load passes)
+    entry_grace_min: int = 10          # fire at entry_time..+grace only; later = off-strategy, skip day
     auto_execute: bool = False         # False = dry-run plans only (safe default)
     auto_disable_on_payout_ready: bool = True
     hedge_guard: bool = True           # skip an entry if the account isn't flat
@@ -63,8 +66,20 @@ def load_settings(path: Path = SETTINGS_FILE) -> TopHatSettings:
 
 
 def save_settings(s: TopHatSettings, path: Path = SETTINGS_FILE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(asdict(s), indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(asdict(s), indent=2))
+
+
+def _norm_hhmm(t: str) -> str:
+    """Normalize '9:45' -> '09:45'. Raises ValueError on junk — every scheduler
+    comparison is a zero-padded string compare, so a malformed time would
+    silently never fire (or fire always)."""
+    parts = str(t).strip().split(":")
+    if len(parts) != 2:
+        raise ValueError(f"invalid time {t!r} (expected HH:MM)")
+    h, m = int(parts[0]), int(parts[1])
+    if not (0 <= h < 24 and 0 <= m < 60):
+        raise ValueError(f"invalid time {t!r} (expected HH:MM)")
+    return f"{h:02d}:{m:02d}"
 
 
 def update_settings(patch: dict, path: Path = SETTINGS_FILE) -> TopHatSettings:
@@ -74,5 +89,7 @@ def update_settings(patch: dict, path: Path = SETTINGS_FILE) -> TopHatSettings:
     for k, v in patch.items():
         if k in known:
             setattr(s, k, v)
+    s.nuke_entry_time = _norm_hhmm(s.nuke_entry_time)
+    s.flip_stagger_times = [_norm_hhmm(t) for t in s.flip_stagger_times]
     save_settings(s, path)
     return s

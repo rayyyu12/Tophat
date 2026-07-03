@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 from tophat.server import auth, service
 from tophat.services.automation import Automation
 from tophat.store import credentials as creds_store
+from tophat.store import single_instance
 from tophat.store.config import load_settings, update_settings
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -33,6 +34,13 @@ WS_INTERVAL = float(os.getenv("TOPHAT_WS_INTERVAL", "3"))
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # [debuglog] TEMPORARY verbose run log -> logs/. Start first so we capture startup.
+    from tophat import debuglog
+    debuglog.start()
+    # Single-instance guard FIRST: refuse to start a second auto-fire loop against
+    # the shared API key + data dir. Raising here aborts ASGI startup, so it works
+    # however the app is launched (python tophat.py OR uvicorn ...app:app).
+    app.state.instance_lock = single_instance.acquire_or_none()
     auth.seed_admin_from_env()
     creds_store.seed_credentials_from_env()
     app.state.brokers = service.build_broker_pool()
@@ -42,6 +50,10 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         await app.state.automation.stop()
+        lock = getattr(app.state, "instance_lock", None)
+        if lock is not None:
+            lock.release()
+        debuglog.stop()   # [debuglog] flush the log on shutdown
 
 
 def create_app() -> FastAPI:
@@ -159,7 +171,10 @@ def create_app() -> FastAPI:
 
     @app.post("/api/settings")
     async def post_settings(patch: dict):
-        updated = update_settings(patch)
+        try:
+            updated = update_settings(patch)
+        except (ValueError, TypeError) as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
         # auto_execute drives Execute-button visibility — bust the cache so the
         # change shows on the next refresh instead of waiting out SNAPSHOT_TTL.
         service.invalidate_snapshot_cache()
@@ -182,7 +197,10 @@ def create_app() -> FastAPI:
         await socket.accept()
         try:
             while True:
-                snap = service.build_dashboard(app.state.brokers)
+                # In a worker thread: a cache-miss build does REST round-trips, and
+                # blocking the event loop here would delay the automation loop's
+                # precisely timed 09:45:00 wake-up.
+                snap = await asyncio.to_thread(service.build_dashboard, app.state.brokers)
                 await socket.send_json(snap)
                 await asyncio.sleep(WS_INTERVAL)
         except (WebSocketDisconnect, Exception):

@@ -729,8 +729,11 @@ function buildRow(a){
   tr.dataset.account = JSON.stringify(a);
   const view = accountForDisplay(a);
   const enabled = view.enabled;
+  // Disabled/terminal rows dim to .42; only an ENABLED-but-inactive row gets the
+  // lighter .72 "inactive" look. (Avoids row-inactive out-specifying .dim so a
+  // disabled+inactive row no longer renders brighter than other disabled rows.)
   if(rowShouldDim(enabled, a.phase)) tr.classList.add('dim');
-  if(!a.can_trade && !a.terminal) tr.classList.add('row-inactive');
+  else if(!a.can_trade && !a.terminal) tr.classList.add('row-inactive');
   if(a.phase==='passed') tr.classList.add('row-passed');
   if(a.phase==='blown') tr.classList.add('row-blown');
   // Phase column shows the program type (eval/funded); Status carries the rest.

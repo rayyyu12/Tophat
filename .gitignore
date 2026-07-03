@@ -33,6 +33,9 @@ research/
 /run_campaign_compare.py
 /runner.py
 
+# [debuglog] TEMPORARY local debug logs (remove the logger + this line later)
+logs/
+
 # Editor / agent tooling caches
 .cursor/
 .agents/

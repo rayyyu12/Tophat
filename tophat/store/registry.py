@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import REGISTRY_FILE
 
 
@@ -58,7 +59,6 @@ def load_registry(path: Path = REGISTRY_FILE) -> AccountRegistry:
 
 
 def save_registry(reg: AccountRegistry, path: Path = REGISTRY_FILE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "settings": {
             "confirm_nukes": reg.settings.confirm_nukes,
@@ -75,4 +75,4 @@ def save_registry(reg: AccountRegistry, path: Path = REGISTRY_FILE) -> None:
             for k, e in reg.accounts.items()
         },
     }
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, indent=2))

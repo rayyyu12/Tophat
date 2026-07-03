@@ -7,23 +7,58 @@ scheduler + hedge-guard. Broker is pluggable (mock by default; ProjectX live).
 from __future__ import annotations
 
 import copy
+import logging
 import os
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from tophat.broker.mock import MockBroker
-from tophat.engine import Action, Phase, account_base, decide, is_nuke_cycle
+from tophat.engine import Action, Phase, account_base, decide, is_nuke_cycle, should_omit_stop
 from tophat.services.guards import position_guard
 from tophat.services.lifecycle import mark_payout_taken, reconcile, record_pending
 from tophat.services.scheduler import assign_day, load_schedule, save_schedule
-from tophat.services.status import infer_phase_from_name, lifecycle_label, sync_phase_from_name
+from tophat.services.status import (
+    infer_phase_from_name, is_practice, lifecycle_label, sync_phase_from_name)
 from tophat.store.config import load_settings
 from tophat.store.registry import load_registry, save_registry
-from tophat.store.states import get_or_create, load_all, save_all, state_to_dict
+from tophat.store.states import get_or_create, load_all, merge_save, save_all, state_to_dict
 
 ET = ZoneInfo("America/New_York")
+_trade = logging.getLogger("tophat.trade")  # [debuglog] verbose order/fill/reconcile log
+
+
+def _open_size(broker, account_id: int, contract_id: str) -> int:
+    """Net open contracts on `contract_id` (0 = flat). Tolerant — never raises into
+    the trading path. Used to avoid closing an already-flat account (ProjectX errors)."""
+    try:
+        return sum(int(p.get("size", 0)) for p in broker.search_open_positions(account_id)
+                   if contract_id is None or p.get("contractId") == contract_id)
+    except Exception:
+        return 0
+
+
+def _broker_order_state(broker, account_id: int) -> None:
+    """[debuglog] Log the working bracket orders + open position for an account, so we
+    can see the actual fill price and the prices the stop/target orders were set at.
+    Best-effort: uses only existing endpoints; never raises into the trading path."""
+    if not _trade.isEnabledFor(logging.INFO):
+        return
+    try:
+        client = getattr(broker, "client", None)
+        if client is not None and hasattr(client, "search_open_orders"):
+            for o in client.search_open_orders(account_id):
+                _trade.info("  working order acct=%s type=%s side=%s size=%s limit=%s stop=%s status=%s id=%s",
+                            account_id, o.get("type"), o.get("side"), o.get("size"),
+                            o.get("limitPrice"), o.get("stopPrice"), o.get("status"), o.get("id"))
+        for p in broker.search_open_positions(account_id):
+            _trade.info("  position acct=%s size=%s avgPrice=%s contract=%s",
+                        account_id, p.get("size"), p.get("averagePrice") or p.get("avgPrice"),
+                        p.get("contractId"))
+    except Exception as exc:
+        _trade.debug("  order/position query failed acct=%s: %s", account_id, exc)
 
 # Short-TTL snapshot cache so the 3s WebSocket push doesn't hammer the broker
 # (one live snapshot = list_accounts + drive + positions×N). The UI still updates
@@ -32,8 +67,23 @@ ET = ZoneInfo("America/New_York")
 # owner so each API key's snapshot caches independently.
 SNAPSHOT_TTL = float(os.getenv("TOPHAT_SNAPSHOT_TTL", "12"))
 _SNAPSHOT_CACHE: dict[str, dict] = {}
+# Per-owner lock so concurrent cache-misses (WS loop on the event loop + sync API
+# handlers in the threadpool) coalesce into ONE broker read instead of stampeding
+# /api/Account/search — the burst that 429'd a freshly added key.
+_SNAPSHOT_LOCKS: dict[str, threading.Lock] = {}
+_LOCKS_GUARD = threading.Lock()
+# Only ONE trading session may run at a time in this process: the automation tick
+# (worker thread) and a manual Execute (API threadpool) must never interleave, or
+# both could read last_fire_date=="" and double-fire the same account.
+_RUN_LOCK = threading.Lock()
+# Serializes registry load→mutate→save cycles across API handlers and sessions.
+_REG_LOCK = threading.Lock()
 # Drive (09:30–09:45 opening range) is stable once computed for the session.
 _DRIVE_CACHE: dict = {"date": "", "value": None, "src": ""}
+# The opening range is only complete at 09:45:00 ET. Reads before then are a
+# forming preview and must NEVER be cached — caching a 09:30:0x reading would
+# lock the day's direction to the first seconds after the open.
+DRIVE_LOCK_HHMM = "09:45"
 
 
 @dataclass
@@ -99,15 +149,20 @@ def _drive(broker, nq: str) -> tuple[int, str]:
     """Today's drive direction, cached for the session once a definitive read lands.
 
     The opening-range read (09:30–09:45 ET) is stable for the rest of the day, so
-    we cache the first non-zero result and stop refetching bars on every snapshot.
+    we cache the first non-zero result at/after 09:45 and stop refetching bars on
+    every snapshot. Before 09:45 the range is still forming: return the provisional
+    value for display but never cache it as the day's direction.
     """
-    today = datetime.now(ET).strftime("%Y-%m-%d")
+    now = datetime.now(ET)
+    today = now.strftime("%Y-%m-%d")
     if _DRIVE_CACHE["date"] == today and _DRIVE_CACHE["value"]:
         return _DRIVE_CACHE["value"], _DRIVE_CACHE["src"]
     try:
         val = broker.drive_direction(nq)
     except Exception:
         return 0, "unavailable"
+    if now.strftime("%H:%M") < DRIVE_LOCK_HHMM:
+        return val, f"forming (locks {DRIVE_LOCK_HHMM} ET)"
     if val:  # only cache a definitive directional read
         _DRIVE_CACHE.update(date=today, value=val, src="stream/bars")
     return val, "stream/bars"
@@ -115,6 +170,16 @@ def _drive(broker, nq: str) -> tuple[int, str]:
 
 def _side(direction: int) -> str:
     return "LONG" if direction == 1 else "SHORT" if direction == -1 else "FLAT"
+
+
+def _plus_minutes(hhmm: str, minutes: int) -> str:
+    """'09:45' + 10 -> '09:55' (same-day wraparound clamped mod 24h)."""
+    try:
+        h, m = (int(x) for x in hhmm.split(":"))
+    except ValueError:
+        return hhmm
+    total = h * 60 + m + minutes
+    return f"{(total // 60) % 24:02d}:{total % 60:02d}"
 
 
 def _effective_can_trade(broker_can_trade: bool, entry) -> bool:
@@ -130,20 +195,29 @@ def _init_state(st, cfg, account) -> None:
     st.peak_equity_eod = max(account.balance, st.base_balance)
 
 
+def _fresh(c: dict | None, mode: str) -> bool:
+    return (c is not None and c["mode"] == mode
+            and time.monotonic() - c["ts"] < SNAPSHOT_TTL)
+
+
 def build_snapshot(broker, *, mode: str, force: bool = False,
                    key: str | None = None, owner: str = "") -> dict:
     """Cached snapshot for one broker. Serves a recent build unless stale or
     `force`d, so the 3s WS push and frequent /api/state calls don't each hit the
     live broker. `key` (default `mode`) scopes the cache per owner."""
-    now = time.monotonic()
     ck = key or mode
-    c = _SNAPSHOT_CACHE.get(ck)
-    if (not force and c is not None and c["mode"] == mode
-            and now - c["ts"] < SNAPSHOT_TTL):
-        return c["data"]
-    snap = _build_snapshot(broker, mode=mode, owner=owner)
-    _SNAPSHOT_CACHE[ck] = {"ts": now, "data": snap, "mode": mode}
-    return snap
+    if not force and _fresh(_SNAPSHOT_CACHE.get(ck), mode):
+        return _SNAPSHOT_CACHE[ck]["data"]
+    with _LOCKS_GUARD:
+        lock = _SNAPSHOT_LOCKS.setdefault(ck, threading.Lock())
+    with lock:
+        # Double-check: a thread ahead of us may have just built it. Honor that even
+        # for force=True — a build from microseconds ago is as fresh as one we'd do.
+        if _fresh(_SNAPSHOT_CACHE.get(ck), mode):
+            return _SNAPSHOT_CACHE[ck]["data"]
+        snap = _build_snapshot(broker, mode=mode, owner=owner)
+        _SNAPSHOT_CACHE[ck] = {"ts": time.monotonic(), "data": snap, "mode": mode}
+        return snap
 
 
 def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
@@ -156,7 +230,7 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
     today = datetime.now(ET).strftime("%Y-%m-%d")
 
     accounts = broker.list_accounts()
-    phase_fixed = False
+    changed_ids: list[int] = []
 
     # Enabled accounts drive today's assignments; all tradeable accounts get a plan preview
     # so the UI can show the would-be plan instantly when toggling enable on.
@@ -167,19 +241,22 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
         st = get_or_create(states, a.account_id)
         if is_new:
             _init_state(st, cfg, a)
-            phase_fixed = True
+            changed_ids.append(a.account_id)
         elif sync_phase_from_name(st, a.name, cfg):
-            phase_fixed = True
+            changed_ids.append(a.account_id)
         entry = registry.entry(a.account_id)
-        tradeable = _effective_can_trade(a.can_trade, entry)
+        tradeable = (_effective_can_trade(a.can_trade, entry)
+                     and not is_practice(a.name))
         if tradeable and st.phase not in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
             tradeable_all[a.account_id] = st
         if entry.enabled and tradeable and st.phase not in (
                 Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
             tradeable_states[a.account_id] = st
 
-    if phase_fixed:
-        save_all(states)
+    if changed_ids:
+        # Merge-save just the new/fixed entries: a full save_all here could clobber
+        # a fire/reconcile the session runner persisted after our load_all above.
+        merge_save(states, changed_ids)
 
     sched = load_schedule()
     enabled_at = {a.account_id: registry.entry(a.account_id).enabled_at for a in accounts}
@@ -205,7 +282,8 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
         preview = preview_assignments.get(a.account_id)
         dec = decide(cfg, st, drive)
         terminal = st.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED)
-        tradeable = _effective_can_trade(a.can_trade, entry)
+        practice = is_practice(a.name)
+        tradeable = _effective_can_trade(a.can_trade, entry) and not practice
         payout_ready = st.payout_ready and not terminal
         # Status reflects the real operational state (decoupled from program phase):
         # terminal phases surface as blown/passed/retired; otherwise active/inactive.
@@ -233,13 +311,10 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
         preview_contracts = dec.plan.contracts if show_plan else 0
         preview_note = ("awaiting withdrawal" if payout_ready
                         else (preview.note if preview else dec.note))
-        if not tradeable and not terminal:
-            plan_action = "idle"
-            plan_side = plan_entry = ""
-            plan_contracts = 0
-            plan_note = ("marked inactive" if entry.force_inactive and a.can_trade
-                         else "inactive — can't trade")
-        elif terminal:
+        # Precedence: terminal > payout_ready > disabled > inactive > active plan.
+        # Disabled (operator turned it off) outranks inactive (broker can't trade) so a
+        # disabled+inactive account reads "Disabled", not "Idle".
+        if terminal:
             plan_action = st.phase.value
             plan_side = plan_entry = plan_note = ""
             plan_contracts = 0
@@ -249,16 +324,23 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
             plan_side = plan_entry = ""
             plan_contracts = 0
             plan_note = "awaiting withdrawal"
-        elif enabled:
+        elif not enabled:
+            plan_action = "disabled"
+            plan_side = plan_entry = plan_note = ""
+            plan_contracts = 0
+        elif not tradeable:
+            plan_action = "idle"
+            plan_side = plan_entry = ""
+            plan_contracts = 0
+            plan_note = ("practice account — not traded" if practice
+                         else "marked inactive" if entry.force_inactive and a.can_trade
+                         else "inactive — can't trade")
+        else:
             plan_action = asg.action if asg else dec.action.value
             plan_side = preview_side
             plan_entry = asg.entry_time if asg else ""
             plan_contracts = preview_contracts
             plan_note = asg.note if asg else dec.note
-        else:
-            plan_action = "disabled"
-            plan_side = plan_entry = plan_note = ""
-            plan_contracts = 0
         pos = sum(int(p.get("size", 0)) for p in broker.search_open_positions(a.account_id))
         rows.append({
             "account_id": a.account_id,
@@ -396,24 +478,27 @@ def run_all_sessions(pool: list[BrokerHandle], *, execute: bool,
     drive = "FLAT"
     drive_src = ""
 
-    for h in pool:
-        if h.broker is None:
-            groups.append({"owner": h.owner, "error": h.error or "unavailable",
-                           "results": [], "orders_placed": 0})
-            continue
-        r = run_session(h.broker, execute=execute, respect_times=respect_times,
-                        now_et=now_et, manual=manual)
-        executed = executed or r["executed"]
-        placed += r["orders_placed"]
-        for x in r["reconciled"]:
-            reconciled.append({**x, "owner": h.owner})
-        for x in r["results"]:
-            x["owner"] = h.owner
-            results.append(x)
-        if not drive_src:
-            drive, drive_src = r["drive"], r["drive_source"]
-        groups.append({"owner": h.owner, "results": r["results"],
-                       "orders_placed": r["orders_placed"]})
+    # One session pass at a time: a manual Execute racing an automation tick would
+    # let both observe last_fire_date=="" and double-fire the same accounts.
+    with _RUN_LOCK:
+        for h in pool:
+            if h.broker is None:
+                groups.append({"owner": h.owner, "error": h.error or "unavailable",
+                               "results": [], "orders_placed": 0})
+                continue
+            r = run_session(h.broker, execute=execute, respect_times=respect_times,
+                            now_et=now_et, manual=manual)
+            executed = executed or r["executed"]
+            placed += r["orders_placed"]
+            for x in r["reconciled"]:
+                reconciled.append({**x, "owner": h.owner})
+            for x in r["results"]:
+                x["owner"] = h.owner
+                results.append(x)
+            if not drive_src:
+                drive, drive_src = r["drive"], r["drive_source"]
+            groups.append({"owner": h.owner, "results": r["results"],
+                           "orders_placed": r["orders_placed"]})
 
     return {
         "executed": executed,
@@ -431,7 +516,9 @@ def find_handle_for_account(pool: list[BrokerHandle], account_id: int) -> Broker
         if h.broker is None:
             continue
         try:
-            if any(a.account_id == account_id for a in h.broker.list_accounts()):
+            # Use the cached snapshot rows, not a fresh list_accounts() per broker.
+            snap = build_snapshot(h.broker, mode=h.mode, key=h.owner, owner=h.owner)
+            if any(r["account_id"] == account_id for r in snap["accounts"]):
                 return h
         except Exception:
             continue
@@ -439,21 +526,23 @@ def find_handle_for_account(pool: list[BrokerHandle], account_id: int) -> Broker
 
 
 def toggle_account(account_id: int) -> bool:
-    reg = load_registry()
-    new = reg.toggle(account_id)
-    save_registry(reg)
+    with _REG_LOCK:
+        reg = load_registry()
+        new = reg.toggle(account_id)
+        save_registry(reg)
     invalidate_snapshot_cache()
     return new
 
 
 def set_account_enabled(account_id: int, enabled: bool) -> bool:
     """Idempotent enable/disable (set, not flip) — safe for rapid repeated calls."""
-    reg = load_registry()
-    e = reg.entry(account_id)
-    if enabled and not e.enabled:
-        e.enabled_at = time.time()  # off->on transition waits behind already-active accounts
-    e.enabled = enabled
-    save_registry(reg)
+    with _REG_LOCK:
+        reg = load_registry()
+        e = reg.entry(account_id)
+        if enabled and not e.enabled:
+            e.enabled_at = time.time()  # off->on transition waits behind already-active accounts
+        e.enabled = enabled
+        save_registry(reg)
     invalidate_snapshot_cache()
     return e.enabled
 
@@ -494,6 +583,11 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
         entry = registry.entry(a.account_id)
         if not _effective_can_trade(a.can_trade, entry) or not entry.enabled:
             continue
+        if is_practice(a.name) and not manual:
+            # Practice accounts never auto-trade or hold an eval slot. Manual
+            # Execute is the exception: enabling ONLY a practice account and
+            # firing by hand is how a live setup is validated end-to-end.
+            continue
         is_new = a.account_id not in states
         st = get_or_create(states, a.account_id)
         if is_new:
@@ -505,16 +599,34 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
 
     # 1. Reconcile closed trades -> advance the payout cycle (live only).
     reconciled = []
+    auto_disabled: list[int] = []
     if really_execute:
         for aid, st in tradeable.items():
             if not st.pending_label:
                 continue
             flat = sum(int(p.get("size", 0)) for p in broker.search_open_positions(aid)) == 0
-            out = reconcile(cfg, st, balance.get(aid, st.equity), flat)
+            # [debuglog] capture pre-reconcile fields (reconcile clears them on close)
+            pend_label, entry_bal = st.pending_label, st.pending_entry_balance
+            tgt_d, stp_d = st.pending_target_dollars, st.pending_stop_dollars
+            cur_bal = balance.get(aid, st.equity)
+            if not flat:
+                _trade.info("STILL OPEN acct=%s %s entry_bal=$%.2f cur_bal=$%.2f (position not flat)",
+                            aid, pend_label, entry_bal, cur_bal)
+            out = reconcile(cfg, st, cur_bal, flat)
             if out:
                 reconciled.append({"account_id": aid, "trade": st.last_fire_date, "outcome": out})
+                trig = {"win": "TARGET hit", "loss": "STOP/liquidation hit",
+                        "flat": "closed ~breakeven (EOD/partial)"}.get(out, out)
+                _trade.info("CLOSE acct=%s %s -> %s | entry_bal=$%.2f close_bal=$%.2f delta=$%+.2f "
+                            "(target~$%.0f stop~$%.0f) | phase=%s days=%s win_days=%s nuke_hit=%s payout_ready=%s",
+                            aid, pend_label, trig, entry_bal, cur_bal, cur_bal - entry_bal,
+                            tgt_d, stp_d, st.phase.value, st.days_traded,
+                            st.winning_days_this_cycle, st.nuke_hit_this_cycle, st.payout_ready)
+                if st.phase == Phase.BLOWN:
+                    _trade.warning("BLOWN acct=%s — trailing floor breached at bal=$%.2f", aid, cur_bal)
             if st.payout_ready and settings.auto_disable_on_payout_ready and registry.is_enabled(aid):
                 registry.entry(aid).enabled = False  # surface for manual withdrawal
+                auto_disabled.append(aid)
 
     enabled_at = {aid: registry.entry(aid).enabled_at for aid in tradeable}
     assignments, sched = assign_day(tradeable, settings, today, load_schedule(), enabled_at)
@@ -534,10 +646,20 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
         if st.last_fire_date == today:
             results.append({"account_id": aid, "action": "done", "note": "already fired today"})
             continue
-        if respect_times and asg.entry_time and hhmm < asg.entry_time:
-            results.append({"account_id": aid, "action": "scheduled",
-                            "note": f"fires {asg.entry_time} ET"})
-            continue
+        if respect_times and asg.entry_time:
+            if hhmm < asg.entry_time:
+                results.append({"account_id": aid, "action": "scheduled",
+                                "note": f"fires {asg.entry_time} ET"})
+                continue
+            grace = max(0, int(getattr(settings, "entry_grace_min", 10)))
+            if grace and hhmm > _plus_minutes(asg.entry_time, grace):
+                # Too late to enter on-strategy (the drive edge is measured AT the
+                # entry time) — e.g. a slot freed mid-morning by a passed eval, or
+                # an account enabled after its stagger slot. Skip until tomorrow.
+                results.append({"account_id": aid, "action": "missed",
+                                "note": f"entry window {asg.entry_time}"
+                                        f"+{grace}m passed — waiting for tomorrow"})
+                continue
         dec = decide(cfg, st, drive)
         if dec.action != Action.TRADE or not dec.plan:
             results.append({"account_id": aid, "action": dec.action.value, "note": dec.note})
@@ -550,20 +672,62 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 ok, reason = position_guard(broker, aid, nq)
             if not ok:
                 row["skipped"] = reason
+                _trade.info("SKIP acct=%s %s — hedge guard: %s", aid, dec.plan.label, reason)
             else:
-                broker.close_contract(aid, nq)
-                row["order_id"] = broker.place_bracket(aid, nq, dec.plan)
-                record_pending(st, dec.plan, balance.get(aid, st.equity), today, cfg.point_value)
-                placed += 1
+                plan = dec.plan
+                entry_bal = balance.get(aid, st.equity)
+                if should_omit_stop(cfg, st, plan, entry_bal):
+                    plan = replace(plan, manual_stop=False)
+                    row["stop"] = "none (near floor — Topstep auto-liquidation)"
+                tgt_d = plan.target_pts * plan.contracts * cfg.point_value
+                stp_d = plan.stop_pts * plan.contracts * cfg.point_value
+                # [debuglog] log the INTENT before the call, so a failed/timed-out place
+                # is still visible (vs. only logging after we get an order_id back).
+                _trade.info("PLACE acct=%s %s %s x%d target=%.2fpt(~$%.0f) stop=%s entry_bal=$%.2f drive=%s",
+                            aid, plan.label, _side(plan.direction), plan.contracts,
+                            plan.target_pts, tgt_d,
+                            "NONE(auto-liq, near floor)" if not plan.manual_stop
+                            else f"{plan.stop_pts:.2f}pt(~${stp_d:.0f})",
+                            entry_bal, _side(drive))
+                try:
+                    # hedge_guard (when on) already proved this account flat, so there's
+                    # nothing to close — and ProjectX errors ("error 2") when you close a
+                    # flat account, which previously aborted the WHOLE session. Flatten
+                    # only when hedge_guard is off and a position actually exists. And
+                    # contain per-account failures so one bad account doesn't stop the fleet.
+                    if not settings.hedge_guard and _open_size(broker, aid, nq):
+                        broker.close_contract(aid, nq)
+                    order_id = broker.place_bracket(aid, nq, plan)
+                    row["order_id"] = order_id
+                    record_pending(st, plan, entry_bal, today, cfg.point_value)
+                    # Persist the fire IMMEDIATELY: if this session dies before its
+                    # end-of-pass save, a lost last_fire_date means the next tick
+                    # would re-fire this account.
+                    merge_save(states, [aid])
+                    placed += 1
+                    _trade.info("PLACED acct=%s %s order_id=%s", aid, plan.label, order_id)
+                    _broker_order_state(broker, aid)   # actual fill price + bracket prices
+                except Exception as exc:
+                    row["error"] = str(exc)
+                    _trade.exception("FIRE FAILED acct=%s %s — skipped, fleet continues", aid, plan.label)
         results.append(row)
 
     if really_execute:
         save_schedule(sched)
-        save_all(states)
-        save_registry(registry)
+        # Merge-save only the accounts this pass touched, so we can't clobber a
+        # concurrent writer's entries (snapshot inits, lifecycle edits).
+        merge_save(states, list(tradeable.keys()))
+        if auto_disabled:
+            with _REG_LOCK:
+                fresh = load_registry()
+                for aid in auto_disabled:
+                    fresh.entry(aid).enabled = False
+                save_registry(fresh)
         invalidate_snapshot_cache()  # positions/state changed — next snapshot is fresh
+        _trade.info("SESSION done — drive=%s(%s) tradeable=%d placed=%d reconciled=%d at %s ET",  # [debuglog]
+                    _side(drive), drive_src, len(tradeable), placed, len(reconciled), hhmm)
     elif phase_fixed:
-        save_all(states)
+        merge_save(states, list(tradeable.keys()))
     return {"executed": really_execute, "drive": _side(drive), "drive_source": drive_src,
             "orders_placed": placed, "reconciled": reconciled, "results": results}
 
@@ -577,12 +741,13 @@ def mark_payout(account_id: int) -> dict:
     if not st:
         return {"account_id": account_id, "error": "unknown account"}
     mark_payout_taken(cfg, st)
-    save_all(states)
+    merge_save(states, [account_id])
     # re-enable so it resumes trading the next cycle (unless retired)
-    reg = load_registry()
     if st.phase.value != "retired":
-        reg.entry(account_id).enabled = True
-        save_registry(reg)
+        with _REG_LOCK:
+            reg = load_registry()
+            reg.entry(account_id).enabled = True
+            save_registry(reg)
     invalidate_snapshot_cache()
     return {"account_id": account_id, "payouts_taken": st.payouts_taken, "phase": st.phase.value}
 
@@ -603,24 +768,21 @@ def list_accounts_detail(pool: list[BrokerHandle]) -> list[dict]:
              for h in pool if h.broker is not None]
     states = load_all()
     registry = load_registry()
-    cfg = load_settings().to_account_config()
     out = []
     for h, snap in snaps:
-        by_id = {r["account_id"]: r for r in snap["accounts"]}
-        for a in h.broker.list_accounts():
-            row = by_id.get(a.account_id)
-            if not row:
+        # Reuse the (cached) snapshot rows — they already carry every broker field plus
+        # owner/lifecycle. Re-calling broker.list_accounts() here was a second, UNCACHED
+        # /api/Account/search per credential on every Accounts-page load (429 risk).
+        for row in snap["accounts"]:
+            aid = row["account_id"]
+            st = states.get(aid)
+            if st is None:
                 continue
-            st = states[a.account_id]
-            entry = registry.entry(a.account_id)
-            tradeable = _effective_can_trade(a.can_trade, entry)
+            entry = registry.entry(aid)
             out.append({
                 **row,
-                "owner": h.owner,
                 "alias": entry.alias,
                 "notes": entry.notes,
-                "force_inactive": entry.force_inactive,
-                "lifecycle": lifecycle_label(cfg, st, can_trade=tradeable),
                 "state": state_to_dict(st),
             })
     out.sort(key=lambda r: (r["owner"], r["phase"] != "funded", r["name"]))
@@ -678,8 +840,13 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         st.equity = bal
         st.peak_equity_eod = max(st.peak_equity_eod, bal)
 
-    save_all(states)
-    save_registry(registry)
+    merge_save(states, [account_id])
+    # Re-apply this account's (patched) registry entry over a fresh load, so we
+    # only write the one entry we own and can't clobber concurrent edits.
+    with _REG_LOCK:
+        fresh_reg = load_registry()
+        fresh_reg.accounts[account_id] = entry
+        save_registry(fresh_reg)
     invalidate_snapshot_cache()
     a = accounts[account_id]
     eff = _effective_can_trade(a.can_trade, entry)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
@@ -362,4 +363,17 @@ class TopHatApp(App):
 
 def run_dashboard() -> None:
     load_dotenv()
-    TopHatApp().run()
+    # Same single-instance guard as the web server: the TUI also logs in with the
+    # shared API key and writes the shared state files, so it must not run beside
+    # another TopHat instance.
+    from tophat.store import single_instance
+    try:
+        lock = single_instance.acquire_or_none()
+    except single_instance.AlreadyRunning as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(1)
+    try:
+        TopHatApp().run()
+    finally:
+        if lock is not None:
+            lock.release()

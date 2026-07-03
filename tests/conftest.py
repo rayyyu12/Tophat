@@ -12,6 +12,11 @@ _TMP = tempfile.mkdtemp(prefix="tophat-tests-")
 os.environ["TOPHAT_DATA_DIR"] = _TMP
 os.environ.pop("TOPHAT_BROKER", None)  # force mock broker in API tests
 os.environ["TOPHAT_SNAPSHOT_TTL"] = "0"  # disable snapshot cache so tests never share stale state
+os.environ["TOPHAT_DEBUG_LOG"] = "0"  # don't write debug log files during the test suite
+# The suite creates many short-lived app instances serially in one process; the
+# real single-instance guard would treat those as a conflict. test_single_instance
+# re-enables and exercises the guard directly.
+os.environ["TOPHAT_SINGLE_INSTANCE"] = "0"
 
 import pytest
 

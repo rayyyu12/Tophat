@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 from tophat.broker.projectx.broker import ProjectXBroker
-from tophat.engine import AccountConfig, AccountState, Action, Phase, decide, start_new_day
+from tophat.engine import (
+    AccountConfig, AccountState, Action, Phase, decide, should_omit_stop, start_new_day)
 from tophat.services.status import infer_phase_from_name, lifecycle_label
 from tophat.store.registry import AccountRegistry
 from tophat.store.states import get_or_create, load_all, save_all
@@ -40,6 +41,15 @@ class RunSummary:
 def sync_balance(state: AccountState, balance: float) -> None:
     state.equity = balance
     state.peak_equity_eod = max(state.peak_equity_eod, balance)
+
+
+def _open_size(broker, account_id: int, contract_id: str) -> int:
+    """Net open contracts (0 = flat). Tolerant — never raises into the trading path."""
+    try:
+        return sum(int(p.get("size", 0)) for p in broker.search_open_positions(account_id)
+                   if contract_id is None or p.get("contractId") == contract_id)
+    except Exception:
+        return 0
 
 
 def run_session(
@@ -99,8 +109,15 @@ def run_session(
                 if is_nuke and not confirm_nukes:
                     res.skipped = "nuke requires confirm"
                 else:
-                    broker.close_contract(acct.account_id, nq)
-                    res.order_id = broker.place_bracket(acct.account_id, nq, dec.plan)
+                    plan = dec.plan
+                    if should_omit_stop(cfg, state, plan, acct.balance):
+                        plan = replace(plan, manual_stop=False)
+                        res.note = (res.note + " | no stop: near floor").strip(" |")
+                    # Flatten only if a position exists — closing a flat account errors
+                    # on ProjectX ("error 2") and would abort the run.
+                    if _open_size(broker, acct.account_id, nq):
+                        broker.close_contract(acct.account_id, nq)
+                    res.order_id = broker.place_bracket(acct.account_id, nq, plan)
                     summary.orders_placed += 1
 
         summary.results.append(res)

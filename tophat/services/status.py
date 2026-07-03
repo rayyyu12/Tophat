@@ -15,6 +15,12 @@ def infer_phase_from_name(name: str) -> Phase:
     return Phase.EVAL
 
 
+def is_practice(name: str) -> bool:
+    """Topstep practice/sim accounts (names like 'PRAC-...') — shown but never
+    traded: a practice account must not fire orders or consume an eval slot."""
+    return "PRAC" in name.upper()
+
+
 def infer_phase(name: str, balance: float | None = None) -> Phase:
     """Alias kept for callers that passed balance; name is the source of truth."""
     return infer_phase_from_name(name)

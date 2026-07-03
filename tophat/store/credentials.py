@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from tophat.store import crypto
+from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import CREDENTIALS_FILE
 
 
@@ -49,7 +50,6 @@ def load_credentials(path: Path = CREDENTIALS_FILE) -> list[Credential]:
 
 
 def save_credentials(creds: list[Credential], path: Path = CREDENTIALS_FILE) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     payload = {"credentials": [
         {
             "username": c.username,
@@ -60,7 +60,7 @@ def save_credentials(creds: list[Credential], path: Path = CREDENTIALS_FILE) -> 
         }
         for c in creds
     ]}
-    path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    atomic_write_text(path, json.dumps(payload, indent=2))
     try:
         os.chmod(path, 0o600)
     except OSError:
