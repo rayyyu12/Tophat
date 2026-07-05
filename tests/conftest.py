@@ -10,6 +10,9 @@ from pathlib import Path
 
 _TMP = tempfile.mkdtemp(prefix="tophat-tests-")
 os.environ["TOPHAT_DATA_DIR"] = _TMP
+# Point the sim bar cache into the temp dir too, so tests never read the real
+# research artifact (tests create their own tiny parquet when they need one).
+os.environ["TOPHAT_SIM_BARS"] = os.path.join(_TMP, "sim_bars.parquet")
 os.environ.pop("TOPHAT_BROKER", None)  # force mock broker in API tests
 os.environ["TOPHAT_SNAPSHOT_TTL"] = "0"  # disable snapshot cache so tests never share stale state
 os.environ["TOPHAT_DEBUG_LOG"] = "0"  # don't write debug log files during the test suite
@@ -38,6 +41,8 @@ def clean_state():
                 f.unlink()
         except OSError:
             pass
+    from tophat.store import simdata
+    simdata.reset_cache()   # the parquet above was just deleted
     yield
 
 

@@ -71,7 +71,7 @@ def create_app() -> FastAPI:
             except Exception:
                 pass
         app.state.brokers = service.build_broker_pool()
-        service.invalidate_snapshot_cache()
+        service.invalidate_broker_cache()
 
     @app.middleware("http")
     async def auth_gate(request, call_next):
@@ -164,6 +164,18 @@ def create_app() -> FastAPI:
         return {"account_id": account_id,
                 "enabled": service.set_account_enabled(account_id, enabled)}
 
+    @app.post("/api/accounts/set-enabled")
+    def set_enabled_bulk(body: dict):
+        """Enable/disable a whole table at once (the per-panel master toggle)."""
+        body = body or {}
+        try:
+            ids = [int(x) for x in body.get("ids", [])]
+        except (TypeError, ValueError):
+            return JSONResponse({"error": "ids must be integers"}, status_code=400)
+        enabled = bool(body.get("enabled", True))
+        return {"updated": service.set_accounts_enabled(ids, enabled),
+                "enabled": enabled}
+
     @app.post("/api/accounts/{account_id}/payout-taken")
     def payout_taken(account_id: int):
         return service.mark_payout(account_id)
@@ -181,7 +193,10 @@ def create_app() -> FastAPI:
         from zoneinfo import ZoneInfo
         ms = mirrors_store.load_mirrors()
         today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        return {"mirrors": [mirror_sync.public_view(m) for m in ms.values()],
+        names = service.account_names(app.state.brokers)
+        return {"mirrors": [{**mirror_sync.public_view(m),
+                             "leader_name": names.get(m.leader_id, "")}
+                            for m in ms.values()],
                 "hazards": mirror_sync.hazards(ms, today)}
 
     @app.post("/api/mirrors")
@@ -279,6 +294,75 @@ def create_app() -> FastAPI:
         if m is None:
             return JSONResponse({"error": "unknown mirror"}, status_code=404)
         return {**mirror_sync.public_view(m), "paid": paid.get("amount", 0.0)}
+
+    @app.get("/api/analytics")
+    def get_analytics():
+        from tophat.server import analytics
+        return analytics.build_analytics(app.state.brokers)
+
+    # --- simulation: backtest + Monte Carlo over the cached NQ minute bars ---
+    @app.get("/api/sim/meta")
+    def sim_meta():
+        from tophat.services import simulator
+        from tophat.store import simdata
+        return {"coverage": simdata.coverage(),
+                "firms": {k: asdict(p) for k, p in FIRMS.items()},
+                "defaults": asdict(simulator.SimParams())}
+
+    @app.post("/api/sim/run")
+    def sim_run(body: dict):
+        # sync def -> FastAPI's threadpool runs it, so a long MC never blocks
+        # the event loop (or the automation tick's timing).
+        from tophat.services import simulator
+        from tophat.store import simdata, simstore
+        if not simdata.available():
+            return JSONResponse(
+                {"error": "no tick data cache - import NinjaTrader tick data, "
+                          "then run research/reconstruction/export_sim_ticks.py"},
+                status_code=400)
+        body = body or {}
+        try:
+            p = simulator.params_from_dict(body.get("params") or {})
+            views = simdata.day_views(p.entry_time)
+            result = simulator.run_sim(p, views)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        tid = str(body.get("template_id") or "")
+        if tid:
+            simstore.attach_run(tid, result)
+        return result
+
+    @app.get("/api/sim/templates")
+    def sim_list_templates():
+        from tophat.store import simstore
+        return {"templates": simstore.list_templates()}
+
+    @app.post("/api/sim/templates")
+    def sim_save_template(body: dict):
+        from tophat.services import simulator
+        from tophat.store import simstore
+        body = body or {}
+        try:
+            p = simulator.params_from_dict(body.get("params") or {})
+            t = simstore.save_template(str(body.get("name", "")), asdict(p))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        return t
+
+    @app.delete("/api/sim/templates/{template_id}")
+    def sim_delete_template(template_id: str):
+        from tophat.store import simstore
+        if not simstore.delete_template(template_id):
+            return JSONResponse({"error": "unknown template"}, status_code=404)
+        return {"ok": True}
+
+    @app.get("/api/sim/templates/{template_id}/result")
+    def sim_template_result(template_id: str):
+        from tophat.store import simstore
+        r = simstore.load_run(template_id)
+        if r is None:
+            return JSONResponse({"error": "no stored run"}, status_code=404)
+        return r
 
     @app.get("/api/settings")
     def get_settings():

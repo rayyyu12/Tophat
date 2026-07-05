@@ -1,4 +1,4 @@
-"""Typer CLI with Rich output — backup to the dashboard UI."""
+"""Typer CLI with Rich output - backup to the dashboard UI."""
 
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ from tophat.store.registry import load_registry
 
 app = typer.Typer(
     name="tophat",
-    help="TopHat NQ automation — dashboard: python -m tophat | CLI: probe, run",
+    help="TopHat NQ automation - dashboard: python -m tophat | CLI: probe, run",
     add_completion=False,
 )
 console = Console(theme=TOPHAT_THEME)
@@ -137,7 +137,7 @@ def run_cmd(
         console.print(table)
         console.print(f"[muted]Orders placed: {summary.orders_placed}[/muted]")
         if not execute:
-            console.print("[muted]Dry-run — add --execute to place orders[/muted]")
+            console.print("[muted]Dry-run - add --execute to place orders[/muted]")
     except ProjectXError as exc:
         console.print(f"[err]{exc}[/err]")
         raise typer.Exit(1)

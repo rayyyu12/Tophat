@@ -17,6 +17,7 @@ class AccountEntry:
     alias: str = ""
     notes: str = ""
     force_inactive: bool = False  # operator override when broker canTrade is misleading
+    exclude_analytics: bool = False  # keep out of Analytics counts/spend (pre-project accounts)
     enabled_at: float = 0.0       # epoch when last enabled; eval-slot tiebreaker (newest waits)
     signal_plan: str = ""         # non-empty = signal channel (engine.SIGNAL_PLAN_TEMPLATES
                                   # key): fires that bracket for the copier, bypasses the
@@ -73,6 +74,7 @@ def save_registry(reg: AccountRegistry, path: Path = REGISTRY_FILE) -> None:
                 "alias": e.alias,
                 "notes": e.notes,
                 "force_inactive": e.force_inactive,
+                "exclude_analytics": e.exclude_analytics,
                 "enabled_at": e.enabled_at,
                 "signal_plan": e.signal_plan,
             }

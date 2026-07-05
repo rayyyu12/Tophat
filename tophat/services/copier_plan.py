@@ -84,11 +84,14 @@ class CopierPlan:
     payout_queue: list[dict] = field(default_factory=list)
     hazards: list[dict] = field(default_factory=list)
     applied_at: str = ""
+    # account_id -> display name, so the UI can label leaders by NAME everywhere
+    # instead of a bare account number
+    leader_names: dict[int, str] = field(default_factory=dict)
 
 
 def _leader_name(leaders: dict[int, Leader], lid: int | None) -> str:
     if lid is None:
-        return "—"
+        return "-"
     l = leaders.get(lid)
     return l.name if l else f"#{lid}"
 
@@ -97,6 +100,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                today: str) -> CopierPlan:
     plan = CopierPlan(date=today)
     lmap = {l.account_id: l for l in leaders}
+    plan.leader_names = {l.account_id: l.name for l in leaders}
     mids = sorted(mirrors)                       # deterministic iteration everywhere
 
     # follower counts for balanced eval pack-following
@@ -155,7 +159,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
             if m.leader_id is not None:
                 plan.lines.append(PlanLine("UNMAP", mid,
                                            f"{label}: remove from {_leader_name(lmap, m.leader_id)}",
-                                           "eval passed — must stop copying"))
+                                           "eval passed - must stop copying"))
             plan.lines.append(PlanLine("ACTIVATE", mid,
                                        f"{label}: activate funded account at {firm.label}",
                                        "then TopHat: Accounts → Activate funded"))
@@ -166,7 +170,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
             if m.leader_id is not None:
                 plan.lines.append(PlanLine("UNMAP", mid,
                                            f"{label}: remove from {_leader_name(lmap, m.leader_id)}",
-                                           "payout eligible — park until paid"))
+                                           "payout eligible - park until paid"))
             plan.lines.append(PlanLine(
                 "REQUEST_PAYOUT", mid,
                 f"{label}: request ${mirror_sync.preview_payout(m):,.0f} at {firm.label}",
@@ -187,7 +191,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                 plan.desired[mid] = Desired(picked.account_id, m.channel, 1.0)
                 plan.lines.append(PlanLine(
                     "MAP", mid, f"{label}: follow {picked.name} @ 1.0x",
-                    "fresh funded leader — paired for life"))
+                    "fresh funded leader - paired for life"))
                 plan.lines.append(PlanLine(
                     "ACTIVATE", mid, f"{label}: TopHat Accounts → Pair with {picked.name}",
                     "records the pairing so inference tracks it"))
@@ -212,8 +216,8 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                     eval_load[pick.account_id] += 1
                     plan.desired[mid] = Desired(pick.account_id, "", want_mult)
                     verb = "MOVE" if lid is not None else "MAP"
-                    why = ("its leader passed/stopped — ride the eval pack"
-                           if lid is not None else "new eval — ride the eval pack")
+                    why = ("its leader passed/stopped - ride the eval pack"
+                           if lid is not None else "new eval - ride the eval pack")
                     plan.lines.append(PlanLine(
                         verb, mid,
                         f"{label}: follow {pick.name} @ {want_mult:g}x", why))
@@ -239,7 +243,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                     plan.lines.append(PlanLine(
                         "UNMAP", mid,
                         f"{label}: remove from {_leader_name(lmap, m.leader_id)}",
-                        "leader gone (blown/retired/disabled) — awaiting re-queue"))
+                        "leader gone (blown/retired/disabled) - awaiting re-queue"))
             if abs(m.multiplier - 1.0) > 1e-9:
                 plan.lines.append(PlanLine(
                     "SET_MULT", mid, f"{label}: multiplier -> 1x",
@@ -285,7 +289,7 @@ def _desire_apex(plan: CopierPlan, m: MirrorAccount, label: str, lmap,
     if landed and m.channel != "flip":
         plan.lines.append(PlanLine(
             "SET_CHANNEL", m.mirror_id, f"{label}: move to FLIP channel",
-            "nuke landed — flips until payout"))
+            "nuke landed - flips until payout"))
     if m.mirror_id in nuke_today:
         ch = signal_by_plan.get("apex-nuke")
         if ch is not None:
@@ -305,7 +309,7 @@ def _desire_apex(plan: CopierPlan, m: MirrorAccount, label: str, lmap,
                 if m.leader_id != ch.account_id:
                     plan.lines.append(PlanLine(
                         "MAP", m.mirror_id, f"{label}: follow {ch.name} (flip channel)",
-                        "flip mode — daily $325 flips"))
+                        "flip mode - daily $325 flips"))
             else:
                 plan.desired[m.mirror_id] = Desired(None, "flip", 1.0)
         else:
@@ -353,7 +357,7 @@ def _buy_list(leaders: list[Leader], mirrors: dict[str, MirrorAccount]) -> list[
     if evals == 0 and pas + 0.47 * evals < APEX.max_funded - 4:
         out.append({"firm": APEX.label, "count": 10,
                     "cost": 10 * APEX.ticket_cost,
-                    "reason": f"new cohort ({pas} PAs, cap {APEX.max_funded}) — "
+                    "reason": f"new cohort ({pas} PAs, cap {APEX.max_funded}) - "
                               "payout-funded gate: buy only from banked payouts"})
     return out
 
@@ -374,6 +378,7 @@ def plan_to_dict(plan: CopierPlan) -> dict:
         "payout_queue": plan.payout_queue,
         "hazards": plan.hazards,
         "applied_at": plan.applied_at,
+        "leader_names": {str(k): v for k, v in plan.leader_names.items()},
     }
 
 
@@ -445,6 +450,15 @@ def build_today_plan(pool, today: str) -> CopierPlan:
     mirrors = load_mirrors()
     plan = build_plan(leaders, mirrors, today)
     plan.hazards = mirror_sync.hazards(mirrors, today)
+    # "no leader mapped" reads RECORDED state; when today's plan assigns one, the
+    # mirror isn't stranded - the real action is applying the plan. Say that.
+    for h in plan.hazards:
+        d = plan.desired.get(h["mirror_id"])
+        if d and d.leader_id is not None and "no leader mapped" in h["text"]:
+            h["severity"] = "action"
+            h["text"] = "leader assigned in today's plan - apply it in Tradecopia"
+    rank = {"danger": 0, "action": 1, "warn": 2, "info": 3}
+    plan.hazards.sort(key=lambda h: rank.get(h["severity"], 9))
     stored = load_plan_dict(today)
     if stored and stored.get("applied_at"):
         plan.applied_at = stored["applied_at"]

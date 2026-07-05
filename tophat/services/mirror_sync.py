@@ -42,13 +42,13 @@ def advance_mirror(m: MirrorAccount, day_pnl: float, date: str) -> list[str]:
             # A win that missed the qualifying bar (slippage on a thin margin) is
             # the silent-drift failure mode — surface it loudly.
             events.append(f"win day netted ${day_pnl:,.0f} < ${firm.win_day_min:,.0f}"
-                          " — did NOT qualify")
+                          " - did NOT qualify")
 
     # trailing floor ratchets at EOD (propagation happens at day close)
     if m.equity <= m.floor() + EPS:
         m.phase = "blown"
         m.payout_ready = False
-        events.append("BLOWN — trailing floor breached")
+        events.append("BLOWN - trailing floor breached")
         return events
     m.peak = max(m.peak, m.equity)
 
@@ -58,11 +58,11 @@ def advance_mirror(m: MirrorAccount, day_pnl: float, date: str) -> list[str]:
         if (m.equity >= firm.eval_target - EPS
                 and m.days_traded >= firm.eval_min_days and cons_ok):
             m.phase = "passed"
-            events.append("EVAL PASSED — unmap from copier, then activate funded")
+            events.append("EVAL PASSED - unmap from copier, then activate funded")
     elif m.phase == "funded":
         if _payout_eligible(m):
             if not m.payout_ready:
-                events.append(f"PAYOUT ELIGIBLE — request ${preview_payout(m):,.0f} at "
+                events.append(f"PAYOUT ELIGIBLE - request ${preview_payout(m):,.0f} at "
                               f"{firm.label}")
             m.payout_ready = True
     return events
@@ -148,9 +148,13 @@ def pair_waiting(m: MirrorAccount, leader_id: int) -> None:
 def mark_mirror_payout(m: MirrorAccount) -> float:
     """Operator confirms the firm paid. Books the withdrawal, resets the window,
     retires clone-firm mirrors after the 4th payout (leader lifecycle parity)."""
+    from tophat.store import trade_log
     amount = preview_payout(m)
     m.equity -= amount
     m.payouts_taken += 1
+    trade_log.log_event("payout", mirror_id=m.mirror_id, firm=m.firm,
+                        source="mirror", estimated=False, amount=round(amount, 2),
+                        payout_number=m.payouts_taken)
     m.win_days = 0
     m.window_profit = 0.0
     m.best_day = 0.0
@@ -175,23 +179,23 @@ def hazards(mirrors: dict[str, MirrorAccount], today: str) -> list[dict]:
         if not m.enabled or m.terminal:
             continue
         if m.phase == "passed":
-            add(m, "action", "eval passed — unmap from copier, then activate funded")
+            add(m, "action", "eval passed - unmap from copier, then activate funded")
         elif m.phase == "waiting":
-            add(m, "info", "waiting for a fresh funded leader — keep unmapped")
+            add(m, "info", "waiting for a fresh funded leader - keep unmapped")
         if m.payout_ready:
-            add(m, "action", f"payout eligible — request ${preview_payout(m):,.0f}, "
+            add(m, "action", f"payout eligible - request ${preview_payout(m):,.0f}, "
                              "then Mark Paid")
         if m.phase in ("eval", "funded") and m.leader_id is not None:
             stop = BASE_STOP * m.multiplier
             if m.room() <= stop + EPS:
-                add(m, "danger", f"${m.room():,.0f} room to floor — one copied loss "
+                add(m, "danger", f"${m.room():,.0f} room to floor - one copied loss "
                                  "blows this account (consider unmapping)")
         if m.phase in ("eval", "funded") and m.leader_id is None:
-            add(m, "warn", "no leader mapped — receiving no trades")
+            add(m, "warn", "no leader mapped - receiving no trades")
         stale = _days_between(m.last_verified, today)
         if m.phase in ("eval", "funded") and (not m.last_verified or stale > 7):
             label = f"{stale} days ago" if m.last_verified else "never"
-            add(m, "warn", f"inferred balance last verified: {label} — sync against "
+            add(m, "warn", f"inferred balance last verified: {label} - sync against "
                            f"the firm dashboard")
     severity_rank = {"danger": 0, "action": 1, "warn": 2, "info": 3}
     out.sort(key=lambda h: severity_rank.get(h["severity"], 9))

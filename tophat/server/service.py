@@ -17,8 +17,8 @@ from zoneinfo import ZoneInfo
 
 from tophat.broker.mock import MockBroker
 from tophat.engine import (
-    SIGNAL_PLAN_TEMPLATES, Action, Phase, account_base, decide, is_nuke_cycle,
-    should_omit_stop)
+    SIGNAL_PLAN_TEMPLATES, Action, Phase, account_base, decide, eod_floor,
+    is_nuke_cycle, should_omit_stop)
 from tophat.services import mirror_sync
 from tophat.services.guards import position_guard
 from tophat.services.lifecycle import mark_payout_taken, reconcile, record_pending
@@ -27,6 +27,7 @@ from tophat.services.scheduler import assign_day, load_schedule, save_schedule
 from tophat.services.status import (
     infer_phase_from_name, is_practice, lifecycle_label, sync_phase_from_name)
 from tophat.store.config import load_settings
+from tophat.store import trade_log
 from tophat.store.registry import load_registry, save_registry
 from tophat.store.states import get_or_create, load_all, merge_save, save_all, state_to_dict
 
@@ -64,16 +65,25 @@ def _broker_order_state(broker, account_id: int) -> None:
     except Exception as exc:
         _trade.debug("  order/position query failed acct=%s: %s", account_id, exc)
 
-# Short-TTL snapshot cache so the 3s WebSocket push doesn't hammer the broker
-# (one live snapshot = list_accounts + drive + positions×N). The UI still updates
-# every WS tick; the broker is only re-read when the cache goes stale or a
-# mutation (toggle / lifecycle / payout / manual run) invalidates it. Keyed per
-# owner so each API key's snapshot caches independently.
+# Two cache layers keep the UI fast without hammering the broker:
+#   - _BROKER_CACHE: raw REST reads (accounts, position sizes, contract, drive)
+#     with a short TTL. Only order placement / pool changes invalidate it.
+#   - _SNAPSHOT_CACHE: the computed dashboard rows (registry + states + schedule).
+#     Local mutations (toggle, lifecycle edit, settings) invalidate ONLY this
+#     layer; the rebuild reuses the cached broker reads, so rapid enable/disable
+#     clicks never trigger REST calls (the burst that used to 429).
+# Both are keyed per owner so each API key caches independently.
 SNAPSHOT_TTL = float(os.getenv("TOPHAT_SNAPSHOT_TTL", "12"))
 _SNAPSHOT_CACHE: dict[str, dict] = {}
+_BROKER_CACHE: dict[str, dict] = {}
+# Generation counters: a build that started BEFORE an invalidation must not be
+# cached AFTER it - the finished build holds pre-mutation data yet would look
+# fresh for a full TTL (the "toggle flips back by itself" bug).
+_SNAP_GEN = 0
+_BROKER_GEN = 0
 # Per-owner lock so concurrent cache-misses (WS loop on the event loop + sync API
 # handlers in the threadpool) coalesce into ONE broker read instead of stampeding
-# /api/Account/search — the burst that 429'd a freshly added key.
+# /api/Account/search - the burst that 429'd a freshly added key.
 _SNAPSHOT_LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 # Only ONE trading session may run at a time in this process: the automation tick
@@ -100,13 +110,31 @@ class BrokerHandle:
 
 
 def invalidate_snapshot_cache(key: str | None = None) -> None:
-    """Force the next build_snapshot to re-read the broker (call after mutations).
+    """Recompute dashboard rows on the next read (call after local mutations).
 
-    `key=None` clears every owner's cache; a specific key clears just that owner."""
-    if key is None:
-        _SNAPSHOT_CACHE.clear()
-    else:
-        _SNAPSHOT_CACHE.pop(key, None)
+    Marks entries stale instead of deleting them so the last good build stays
+    available as a fallback when a live rebuild fails. Does NOT force broker
+    REST reads - use invalidate_broker_cache for that. `key=None` hits every
+    owner; a specific key hits just that owner."""
+    global _SNAP_GEN
+    with _LOCKS_GUARD:
+        _SNAP_GEN += 1
+        stale = (_SNAPSHOT_CACHE.values() if key is None
+                 else [_SNAPSHOT_CACHE[key]] if key in _SNAPSHOT_CACHE else [])
+        for c in stale:
+            c["ts"] = float("-inf")
+
+
+def invalidate_broker_cache(key: str | None = None) -> None:
+    """Force fresh broker REST reads (after orders placed / pool rebuilt)."""
+    global _BROKER_GEN
+    with _LOCKS_GUARD:
+        _BROKER_GEN += 1
+        stale = (_BROKER_CACHE.values() if key is None
+                 else [_BROKER_CACHE[key]] if key in _BROKER_CACHE else [])
+        for c in stale:
+            c["ts"] = float("-inf")
+    invalidate_snapshot_cache(key)
 
 
 def make_broker():
@@ -190,6 +218,15 @@ def _effective_can_trade(broker_can_trade: bool, entry) -> bool:
     return broker_can_trade and not entry.force_inactive
 
 
+def _below_mll(cfg, st, balance: float) -> bool:
+    """Auto-inactive detection: the live balance is at/below the trailing MLL
+    floor, so the firm won't let this account trade even if the API still says
+    canTrade=true. Only meaningful for accounts still in a trading phase."""
+    if st.phase not in (Phase.EVAL, Phase.FUNDED):
+        return False
+    return balance <= eod_floor(cfg, st)
+
+
 def _init_state(st, cfg, account) -> None:
     """First time we see an account: infer phase from name and set its baseline."""
     st.phase = infer_phase_from_name(account.name)
@@ -204,11 +241,35 @@ def _fresh(c: dict | None, mode: str) -> bool:
             and time.monotonic() - c["ts"] < SNAPSHOT_TTL)
 
 
+def _read_broker(broker, ck: str, *, force: bool = False) -> dict:
+    """Cached raw broker reads for one credential: accounts, open-position sizes,
+    the active NQ contract, and the drive read. The ONLY place snapshot builds
+    touch REST, so everything downstream can rebuild for free."""
+    c = _BROKER_CACHE.get(ck)
+    if not force and c is not None and time.monotonic() - c["ts"] < SNAPSHOT_TTL:
+        return c
+    gen0 = _BROKER_GEN
+    nq = broker.resolve_nq_contract()
+    drive, drive_src = _drive(broker, nq)
+    accounts = broker.list_accounts()
+    positions = {a.account_id: sum(int(p.get("size", 0))
+                                   for p in broker.search_open_positions(a.account_id))
+                 for a in accounts}
+    c = {"ts": time.monotonic(), "accounts": accounts, "positions": positions,
+         "nq": nq, "drive": drive, "drive_src": drive_src}
+    # An order may have been placed while we were reading; don't pin stale reads.
+    if _BROKER_GEN == gen0:
+        _BROKER_CACHE[ck] = c
+    return c
+
+
 def build_snapshot(broker, *, mode: str, force: bool = False,
                    key: str | None = None, owner: str = "") -> dict:
     """Cached snapshot for one broker. Serves a recent build unless stale or
     `force`d, so the 3s WS push and frequent /api/state calls don't each hit the
-    live broker. `key` (default `mode`) scopes the cache per owner."""
+    live broker. `key` (default `mode`) scopes the cache per owner. If a rebuild
+    fails (broker 429/timeout), the last good snapshot is served instead so a
+    transient blip never blanks a table that was just showing data."""
     ck = key or mode
     if not force and _fresh(_SNAPSHOT_CACHE.get(ck), mode):
         return _SNAPSHOT_CACHE[ck]["data"]
@@ -216,24 +277,37 @@ def build_snapshot(broker, *, mode: str, force: bool = False,
         lock = _SNAPSHOT_LOCKS.setdefault(ck, threading.Lock())
     with lock:
         # Double-check: a thread ahead of us may have just built it. Honor that even
-        # for force=True — a build from microseconds ago is as fresh as one we'd do.
+        # for force=True - a build from microseconds ago is as fresh as one we'd do.
         if _fresh(_SNAPSHOT_CACHE.get(ck), mode):
             return _SNAPSHOT_CACHE[ck]["data"]
-        snap = _build_snapshot(broker, mode=mode, owner=owner)
-        _SNAPSHOT_CACHE[ck] = {"ts": time.monotonic(), "data": snap, "mode": mode}
+        gen0 = _SNAP_GEN
+        try:
+            snap = _build_snapshot(broker, mode=mode, owner=owner, ck=ck, force=force)
+        except Exception:
+            last = _SNAPSHOT_CACHE.get(ck)
+            if last is not None and last["mode"] == mode:
+                return last["data"]
+            raise
+        # A mutation may have landed while we were building; caching this build
+        # would pin pre-mutation rows for a full TTL. Serve it, don't cache it.
+        if _SNAP_GEN == gen0:
+            _SNAPSHOT_CACHE[ck] = {"ts": time.monotonic(), "data": snap, "mode": mode}
         return snap
 
 
-def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
+def _build_snapshot(broker, *, mode: str, owner: str = "",
+                    ck: str = "", force: bool = False) -> dict:
     settings = load_settings()
     cfg = settings.to_account_config()
     registry = load_registry()
     states = load_all()
-    nq = broker.resolve_nq_contract()
-    drive, drive_src = _drive(broker, nq)
+    reads = _read_broker(broker, ck or mode, force=force)
+    nq = reads["nq"]
+    drive, drive_src = reads["drive"], reads["drive_src"]
     today = datetime.now(ET).strftime("%Y-%m-%d")
 
-    accounts = broker.list_accounts()
+    accounts = reads["accounts"]
+    positions = reads["positions"]
     changed_ids: list[int] = []
 
     # Enabled accounts drive today's assignments; all tradeable accounts get a plan preview
@@ -250,7 +324,8 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
             changed_ids.append(a.account_id)
         entry = registry.entry(a.account_id)
         tradeable = (_effective_can_trade(a.can_trade, entry)
-                     and not is_practice(a.name))
+                     and not is_practice(a.name)
+                     and not _below_mll(cfg, st, a.balance))
         if tradeable and st.phase not in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
             tradeable_all[a.account_id] = st
         if entry.enabled and tradeable and st.phase not in (
@@ -287,7 +362,9 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
         dec = decide(cfg, st, drive)
         terminal = st.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED)
         practice = is_practice(a.name)
-        tradeable = _effective_can_trade(a.can_trade, entry) and not practice
+        mll_dead = _below_mll(cfg, st, a.balance)
+        tradeable = (_effective_can_trade(a.can_trade, entry) and not practice
+                     and not mll_dead)
         payout_ready = st.payout_ready and not terminal
         # Status reflects the real operational state (decoupled from program phase):
         # terminal phases surface as blown/passed/retired; otherwise active/inactive.
@@ -303,58 +380,55 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
             slot_kind = "nuke"
         else:
             slot_kind = None
-        if terminal:
-            preview_action = st.phase.value
-        elif payout_ready:
-            preview_action = "payout_ready"
+        def plan_when_enabled(assignment):
+            """(action, side, entry, contracts, note) this account runs when enabled.
+
+            Shared by the live plan AND the preview so a disabled row's preview is
+            exactly what enabling it will show - including signal/practice/inactive
+            states - and the UI's optimistic toggle never has to be corrected."""
+            if terminal:
+                return st.phase.value, "", "", 0, ""
+            if payout_ready:
+                # Parked awaiting withdrawal - never flip/nuke (mirrors run_session).
+                return "payout_ready", "", "", 0, "awaiting withdrawal"
+            if entry.signal_plan and _effective_can_trade(a.can_trade, entry):
+                # Signal channel: fires its designated bracket for the copier - shown
+                # even on practice accounts (which are otherwise never traded).
+                tpl = SIGNAL_PLAN_TEMPLATES.get(entry.signal_plan)
+                return ("signal", _side(drive) if drive else "", settings.nuke_entry_time,
+                        tpl.contracts if tpl else 0,
+                        f"signal channel - {entry.signal_plan}")
+            if not tradeable:
+                note = ("practice account - not traded" if practice
+                        else "balance at/below MLL floor" if mll_dead
+                        else "marked inactive" if entry.force_inactive and a.can_trade
+                        else "inactive - can't trade")
+                return "idle", "", "", 0, note
+            side = _side(dec.plan.direction) if dec.plan else ""
+            contracts = dec.plan.contracts if dec.plan else 0
+            if assignment:
+                # A slot was assigned but the engine won't trade (DLL lockout,
+                # flat drive, dead) - the pill loses its side, so carry the
+                # engine's reason instead of the bare slot note.
+                note = assignment.note
+                if dec.action != Action.TRADE and dec.note:
+                    note = dec.note
+                return (assignment.action, side, assignment.entry_time,
+                        contracts, note)
+            return dec.action.value, side, "", contracts, dec.note
+
+        (preview_action, preview_side, preview_entry,
+         preview_contracts, preview_note) = plan_when_enabled(preview)
+        # Precedence: terminal > payout_ready > disabled > signal > inactive > plan.
+        # Disabled (operator turned it off) outranks inactive (broker can't trade) so
+        # a disabled+inactive account reads "Disabled", not "Idle".
+        if enabled or terminal or payout_ready:
+            (plan_action, plan_side, plan_entry,
+             plan_contracts, plan_note) = plan_when_enabled(asg)
         else:
-            preview_action = preview.action if preview else dec.action.value
-        show_plan = dec.plan and not terminal and not payout_ready
-        preview_side = _side(dec.plan.direction) if show_plan else ""
-        preview_entry = "" if (terminal or payout_ready) else (preview.entry_time if preview else "")
-        preview_contracts = dec.plan.contracts if show_plan else 0
-        preview_note = ("awaiting withdrawal" if payout_ready
-                        else (preview.note if preview else dec.note))
-        # Precedence: terminal > payout_ready > disabled > inactive > active plan.
-        # Disabled (operator turned it off) outranks inactive (broker can't trade) so a
-        # disabled+inactive account reads "Disabled", not "Idle".
-        if terminal:
-            plan_action = st.phase.value
-            plan_side = plan_entry = plan_note = ""
-            plan_contracts = 0
-        elif payout_ready:
-            # Parked awaiting withdrawal — do NOT show flip/nuke (mirrors run_session).
-            plan_action = "payout_ready"
-            plan_side = plan_entry = ""
-            plan_contracts = 0
-            plan_note = "awaiting withdrawal"
-        elif not enabled:
-            plan_action = "disabled"
-            plan_side = plan_entry = plan_note = ""
-            plan_contracts = 0
-        elif entry.signal_plan and _effective_can_trade(a.can_trade, entry):
-            # Signal channel: fires its designated bracket for the copier — shown
-            # even on practice accounts (which are otherwise never traded).
-            tpl = SIGNAL_PLAN_TEMPLATES.get(entry.signal_plan)
-            plan_action = "signal"
-            plan_side = _side(drive) if drive else ""
-            plan_entry = settings.nuke_entry_time
-            plan_contracts = tpl.contracts if tpl else 0
-            plan_note = f"signal channel — {entry.signal_plan}"
-        elif not tradeable:
-            plan_action = "idle"
-            plan_side = plan_entry = ""
-            plan_contracts = 0
-            plan_note = ("practice account — not traded" if practice
-                         else "marked inactive" if entry.force_inactive and a.can_trade
-                         else "inactive — can't trade")
-        else:
-            plan_action = asg.action if asg else dec.action.value
-            plan_side = preview_side
-            plan_entry = asg.entry_time if asg else ""
-            plan_contracts = preview_contracts
-            plan_note = asg.note if asg else dec.note
-        pos = sum(int(p.get("size", 0)) for p in broker.search_open_positions(a.account_id))
+            plan_action, plan_side, plan_entry, plan_contracts, plan_note = (
+                "disabled", "", "", 0, "")
+        pos = positions.get(a.account_id, 0)
         rows.append({
             "account_id": a.account_id,
             "owner": owner,
@@ -364,6 +438,7 @@ def _build_snapshot(broker, *, mode: str, owner: str = "") -> dict:
             "can_trade": tradeable,
             "broker_can_trade": a.can_trade,
             "force_inactive": entry.force_inactive,
+            "exclude_analytics": entry.exclude_analytics,
             "signal_plan": entry.signal_plan,
             "trading_status": "active" if tradeable else "inactive",
             "status": status,
@@ -501,7 +576,7 @@ def run_all_sessions(pool: list[BrokerHandle], *, execute: bool,
                                "results": [], "orders_placed": 0})
                 continue
             r = run_session(h.broker, execute=execute, respect_times=respect_times,
-                            now_et=now_et, manual=manual)
+                            now_et=now_et, manual=manual, owner=h.owner)
             executed = executed or r["executed"]
             placed += r["orders_placed"]
             for x in r["reconciled"]:
@@ -523,6 +598,31 @@ def run_all_sessions(pool: list[BrokerHandle], *, execute: bool,
         "results": results,
         "groups": groups,
     }
+
+
+def account_names_and_balances(
+        pool: list[BrokerHandle]) -> tuple[dict[int, str], dict[int, float]]:
+    """account_id -> (display name, live balance) across every credential (cached
+    snapshots). Names label mirror/leader references; balances let Analytics show
+    live funded equity instead of possibly stale tracked equity."""
+    names: dict[int, str] = {}
+    balances: dict[int, float] = {}
+    for h in pool:
+        if h.broker is None:
+            continue
+        try:
+            snap = build_snapshot(h.broker, mode=h.mode, key=h.owner, owner=h.owner)
+        except Exception:
+            continue
+        for r in snap["accounts"]:
+            names[r["account_id"]] = r["name"]
+            balances[r["account_id"]] = r["balance"]
+    return names, balances
+
+
+def account_names(pool: list[BrokerHandle]) -> dict[int, str]:
+    """account_id -> display name across every credential (cached snapshots)."""
+    return account_names_and_balances(pool)[0]
 
 
 def find_handle_for_account(pool: list[BrokerHandle], account_id: int) -> BrokerHandle | None:
@@ -549,7 +649,7 @@ def toggle_account(account_id: int) -> bool:
 
 
 def set_account_enabled(account_id: int, enabled: bool) -> bool:
-    """Idempotent enable/disable (set, not flip) — safe for rapid repeated calls."""
+    """Idempotent enable/disable (set, not flip) - safe for rapid repeated calls."""
     with _REG_LOCK:
         reg = load_registry()
         e = reg.entry(account_id)
@@ -559,6 +659,21 @@ def set_account_enabled(account_id: int, enabled: bool) -> bool:
         save_registry(reg)
     invalidate_snapshot_cache()
     return e.enabled
+
+
+def set_accounts_enabled(ids: list[int], enabled: bool) -> int:
+    """Bulk idempotent enable/disable - one registry write for a whole table."""
+    now = time.time()
+    with _REG_LOCK:
+        reg = load_registry()
+        for aid in ids:
+            e = reg.entry(aid)
+            if enabled and not e.enabled:
+                e.enabled_at = now
+            e.enabled = enabled
+        save_registry(reg)
+    invalidate_snapshot_cache()
+    return len(ids)
 
 
 def _fire_signal(broker, aid: int, st, plan_key: str, drive: int, settings, states,
@@ -617,7 +732,8 @@ def _fire_signal(broker, aid: int, st, plan_key: str, drive: int, settings, stat
 
 
 def run_session(broker, *, execute: bool, respect_times: bool = False,
-                now_et: datetime | None = None, manual: bool = False) -> dict:
+                now_et: datetime | None = None, manual: bool = False,
+                owner: str = "") -> dict:
     """Reconcile closed trades, then fire today's due plan.
 
     execute=True places real orders AND reconciles outcomes into state; otherwise
@@ -682,6 +798,7 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             flat = sum(int(p.get("size", 0)) for p in broker.search_open_positions(aid)) == 0
             # [debuglog] capture pre-reconcile fields (reconcile clears them on close)
             pend_label, entry_bal = st.pending_label, st.pending_entry_balance
+            pend_date = st.pending_date or st.last_fire_date
             tgt_d, stp_d = st.pending_target_dollars, st.pending_stop_dollars
             cur_bal = balance.get(aid, st.equity)
             if not flat:
@@ -699,6 +816,11 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                             st.winning_days_this_cycle, st.nuke_hit_this_cycle, st.payout_ready)
                 if st.phase == Phase.BLOWN:
                     _trade.warning("BLOWN acct=%s — trailing floor breached at bal=$%.2f", aid, cur_bal)
+                # Feed the Analytics page: one immutable record per resolved trade.
+                trade_log.log_event(
+                    "trade", owner=owner, account_id=aid, trade_date=pend_date,
+                    label=pend_label, outcome=out, pnl=round(cur_bal - entry_bal, 2),
+                    balance=round(cur_bal, 2), phase=st.phase.value)
                 # Followers book the leader's ACTUAL delta scaled by their multiplier.
                 mirror_touched.extend(mirror_sync.apply_leader_outcome(
                     mirrors, aid, cur_bal - entry_bal, today))
@@ -724,6 +846,13 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 placed += 1
             results.append(row)
             continue
+        # Safety net: a balance at/below the MLL floor means the firm already
+        # considers this account dead, whatever the API's canTrade says. Never fire.
+        bal = balance.get(aid)
+        if bal is not None and _below_mll(cfg, st, bal):
+            results.append({"account_id": aid, "action": "idle",
+                            "note": "balance at/below MLL floor - marked inactive"})
+            continue
         asg = assignments[aid]
         if asg.action in ("idle", "retire"):
             results.append({"account_id": aid, "action": asg.action, "note": asg.note})
@@ -747,7 +876,7 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 # an account enabled after its stagger slot. Skip until tomorrow.
                 results.append({"account_id": aid, "action": "missed",
                                 "note": f"entry window {asg.entry_time}"
-                                        f"+{grace}m passed — waiting for tomorrow"})
+                                        f"+{grace}m passed - waiting for tomorrow"})
                 continue
         dec = decide(cfg, st, drive)
         if dec.action != Action.TRADE or not dec.plan:
@@ -767,7 +896,7 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 entry_bal = balance.get(aid, st.equity)
                 if should_omit_stop(cfg, st, plan, entry_bal):
                     plan = replace(plan, manual_stop=False)
-                    row["stop"] = "none (near floor — Topstep auto-liquidation)"
+                    row["stop"] = "none (near floor - Topstep auto-liquidation)"
                 tgt_d = plan.target_pts * plan.contracts * cfg.point_value
                 stp_d = plan.stop_pts * plan.contracts * cfg.point_value
                 # [debuglog] log the INTENT before the call, so a failed/timed-out place
@@ -814,7 +943,7 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 for aid in auto_disabled:
                     fresh.entry(aid).enabled = False
                 save_registry(fresh)
-        invalidate_snapshot_cache()  # positions/state changed — next snapshot is fresh
+        invalidate_broker_cache()  # positions/balances changed - re-read the broker
         _trade.info("SESSION done — drive=%s(%s) tradeable=%d placed=%d reconciled=%d at %s ET",  # [debuglog]
                     _side(drive), drive_src, len(tradeable), placed, len(reconciled), hhmm)
     elif phase_fixed:
@@ -833,6 +962,12 @@ def mark_payout(account_id: int) -> dict:
         return {"account_id": account_id, "error": "unknown account"}
     mark_payout_taken(cfg, st)
     merge_save(states, [account_id])
+    # Withdrawal amount is manual at Topstep; record the rule's estimate
+    # (min(cap, half the balance)) so Analytics can total banked payouts.
+    trade_log.log_event(
+        "payout", account_id=account_id, source="leader", estimated=True,
+        amount=round(min(cfg.payout_cap, max(st.equity / 2.0, 0.0)), 2),
+        payout_number=st.payouts_taken)
     # re-enable so it resumes trading the next cycle (unless retired)
     if st.phase.value != "retired":
         with _REG_LOCK:
@@ -885,8 +1020,9 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
     handle = find_handle_for_account(pool, account_id)
     if handle is None:
         return {"account_id": account_id, "error": "unknown account"}
-    broker = handle.broker
-    accounts = {a.account_id: a for a in broker.list_accounts()}
+    # Cached broker reads - saving an account must not cost a REST round-trip.
+    reads = _read_broker(handle.broker, handle.owner or handle.mode)
+    accounts = {a.account_id: a for a in reads["accounts"]}
     if account_id not in accounts:
         return {"account_id": account_id, "error": "unknown account"}
 
@@ -925,6 +1061,8 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         entry.enabled = new_enabled
     if "force_inactive" in patch:
         entry.force_inactive = bool(patch["force_inactive"])
+    if "exclude_analytics" in patch:
+        entry.exclude_analytics = bool(patch["exclude_analytics"])
     if "signal_plan" in patch:
         key = str(patch["signal_plan"] or "")
         if key and key not in SIGNAL_PLAN_TEMPLATES:
@@ -958,5 +1096,6 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         "broker_can_trade": a.can_trade,
         "can_trade": eff,
         "alias": entry.alias,
+        "exclude_analytics": entry.exclude_analytics,
         "signal_plan": entry.signal_plan,
     }

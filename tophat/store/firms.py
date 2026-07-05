@@ -49,7 +49,8 @@ class FirmProfile:
 
 
 TOPSTEP = FirmProfile(
-    key="topstep-50k", label="Topstep", ticket_cost=85.0, activation_cost=149.0,
+    # $85 all-in: Topstep has NO funded-activation fee (operator-verified 2026-07-04).
+    key="topstep-50k", label="Topstep", ticket_cost=85.0, activation_cost=0.0,
     dll=1_000.0, trailing=2_000.0,
     eval_target=3_000.0, eval_consistency=0.50, eval_min_days=2,
     win_day_min=150.0, payout_style="half-profit-cap", payout_cap=2_000.0,

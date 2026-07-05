@@ -1,0 +1,46 @@
+{
+  "templates": {
+    "test": {
+      "id": "test",
+      "name": "test",
+      "params": {
+        "lifecycle": "full",
+        "direction_rule": "drive",
+        "entry_time": "09:45",
+        "date_from": "",
+        "date_to": "",
+        "initial_balance": 50000,
+        "funded_start": 0,
+        "dll": 3000,
+        "trailing": 4500,
+        "point_value": 20,
+        "eval_contracts": 5,
+        "eval_target_pts": 15.5,
+        "eval_stop_pts": 10,
+        "eval_target_dollars": 3000,
+        "eval_min_days": 2,
+        "funded_contracts": 3,
+        "nuke_target_dollars": 7000,
+        "flip_contracts": 1,
+        "flip_target_dollars": 170,
+        "winning_days_required": 5,
+        "payout_cap": 5000,
+        "payouts_target": 4,
+        "single_contracts": 2,
+        "single_target_pts": 32.5,
+        "single_stop_pts": 25,
+        "ticket_cost": 195,
+        "activation_cost": 0,
+        "n_paths": 2000,
+        "seed": 7,
+        "sampling": "bootstrap",
+        "max_days": 250,
+        "tickets": 10,
+        "tie_rule": "pessimistic"
+      },
+      "created_at": 1783217052.2425618,
+      "last_run_at": null,
+      "summary": null
+    }
+  }
+}

@@ -3,9 +3,10 @@
   "configurations": [
     {
       "name": "tophat-preview-mock",
-      "runtimeExecutable": ".venv\\Scripts\\python.exe",
+      "runtimeExecutable": "python",
       "runtimeArgs": ["deploy\\preview_server.py"],
-      "port": 8899
+      "port": 8899,
+      "autoPort": true
     }
   ]
 }

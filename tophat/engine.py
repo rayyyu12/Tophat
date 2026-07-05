@@ -184,7 +184,7 @@ def decide(cfg: AccountConfig, state: AccountState, drive_direction: int) -> Dec
     if state.phase == Phase.RETIRED:
         return Decision(Action.RETIRE, note="account retired (payouts harvested)")
     if state.phase == Phase.PASSED:
-        return Decision(Action.HOLD, note="eval passed — funded account incoming")
+        return Decision(Action.HOLD, note="eval passed - funded account incoming")
     if state.phase == Phase.BLOWN:
         return Decision(Action.MANUAL, note="account blown (hit trailing floor)")
     if is_dead(cfg, state):

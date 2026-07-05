@@ -60,9 +60,9 @@ class SettingsScreen(ModalScreen[bool]):
             yield Label(f"Confirm nukes before execute: {reg.settings.confirm_nukes}")
             yield Label(f"Show disabled accounts: {reg.settings.show_disabled}")
             yield Label("")
-            yield Label("[dim]N — toggle confirm nukes[/dim]")
-            yield Label("[dim]V — toggle show disabled[/dim]")
-            yield Label("[dim]Esc — close[/dim]")
+            yield Label("[dim]N - toggle confirm nukes[/dim]")
+            yield Label("[dim]V - toggle show disabled[/dim]")
+            yield Label("[dim]Esc - close[/dim]")
 
     def action_dismiss(self, value: bool = False) -> None:
         self.dismiss(value)
@@ -179,10 +179,10 @@ class TopHatApp(App):
                 st.phase = infer_phase_from_name(a.name)
         save_all(self.states)
         self._refresh_table()
-        self._set_status("Connected — streaming live quotes & account updates")
+        self._set_status("Connected - streaming live quotes & account updates")
 
     def _on_stream_update(self) -> None:
-        """Refresh UI from stream snapshot — no REST calls."""
+        """Refresh UI from stream snapshot - no REST calls."""
         now = time.monotonic()
         if now - self._last_stream_refresh < STREAM_UI_REFRESH_SEC:
             return
@@ -223,11 +223,11 @@ class TopHatApp(App):
             live_accts = dict(snap.accounts)
 
         now = _now_ct()
-        px = f"{last_px:,.2f}" if last_px is not None else "—"
+        px = f"{last_px:,.2f}" if last_px is not None else "-"
         hdr = (
             f"NQ {self.nq_contract}  |  "
             f"Last {px}  |  Drive {self._drive_label()}  |  "
-            f"Stream M{'OK' if mkt else '—'}/U{'OK' if usr else '—'}  |  "
+            f"Stream M{'OK' if mkt else '-'}/U{'OK' if usr else '-'}  |  "
             f"Quotes {qn}  |  {now}"
         )
         self.query_one("#status-bar", Static).update(hdr)
@@ -331,7 +331,7 @@ class TopHatApp(App):
             n = len(summary.results)
             if n == 0:
                 msg = (
-                    f"{'Executed' if execute else 'Dry-run'}: 0 accounts — "
+                    f"{'Executed' if execute else 'Dry-run'}: 0 accounts - "
                     "enable tradeable rows (E) or check drive signal"
                 )
             else:
@@ -351,7 +351,7 @@ class TopHatApp(App):
 
     def action_execute(self) -> None:
         if self.registry.settings.confirm_nukes:
-            self.notify("Executing (including nukes) — press X only when ready", severity="warning")
+            self.notify("Executing (including nukes) - press X only when ready", severity="warning")
         self._run(execute=True)
 
     def on_unmount(self) -> None:

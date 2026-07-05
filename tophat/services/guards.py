@@ -21,5 +21,5 @@ def position_guard(broker, account_id: int, contract_id: str) -> tuple[bool, str
         and int(p.get("size", 0)) != 0
     ]
     if open_on_contract:
-        return False, "account not flat — skipped to avoid hedge/pyramid"
+        return False, "account not flat - skipped to avoid hedge/pyramid"
     return True, ""

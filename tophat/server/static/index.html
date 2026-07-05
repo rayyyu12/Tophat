@@ -118,7 +118,8 @@
 
   /* ---------- Pills ---------- */
   .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 11px;border-radius:999px;
-    font-size:12px;font-weight:600;line-height:1.6;border:1px solid transparent}
+    font-size:12px;font-weight:600;line-height:1.6;border:1px solid transparent;
+    white-space:nowrap}
   .pill::before{content:"";width:6px;height:6px;border-radius:50%;background:currentColor;
     box-shadow:0 0 8px currentColor}
   .pill.long{color:var(--long);background:rgba(74,222,128,.12);border-color:rgba(74,222,128,.22)}
@@ -135,7 +136,7 @@
   .pill.passed{color:var(--long);background:rgba(74,222,128,.13);border-color:rgba(74,222,128,.32)}
   .pill.blown{color:var(--short);background:rgba(251,113,133,.13);border-color:rgba(251,113,133,.32)}
 
-  /* terminal-phase row accents (single left edge only — no per-column lines) */
+  /* terminal-phase row accents (single left edge only - no per-column lines) */
   tr.row-passed td:first-child{box-shadow:inset 3px 0 0 var(--long)}
   tr.row-passed{background:rgba(74,222,128,.05)}
   tr.row-passed:hover{background:rgba(74,222,128,.08)}
@@ -152,12 +153,25 @@
     min-height:58px;padding:14px 22px;border-bottom:1px solid var(--border)}
   .panel .head h2{font-size:15px;margin:0;font-weight:600;font-family:var(--display);
     letter-spacing:-.01em}
+  /* master switch lives INSIDE the Enabled column header, stacked under the
+     label, so it lines up exactly with the row toggles below it */
+  .th-enabled{display:inline-flex;flex-direction:column;align-items:center;gap:7px}
   .tablewrap{width:100%;overflow-x:auto}
   table{width:100%;border-collapse:collapse;min-width:720px}
+  /* Per-owner account tables: fixed layout + a shared colgroup so every table's
+     columns line up identically, regardless of what content each one holds. */
+  table.acct{table-layout:fixed;min-width:980px}
+  table.acct .name,table.acct .mono{overflow-wrap:anywhere}
   th{text-align:center;color:var(--faint);font-weight:600;font-size:11px;
     text-transform:uppercase;letter-spacing:.07em;padding:13px 22px;border-bottom:1px solid var(--border)}
   td{padding:15px 22px;border-bottom:1px solid var(--border);font-size:13.5px;text-align:center;
     vertical-align:middle}
+  /* Plan cell: fixed-height flex column, content vertically CENTERED. A note
+     appearing/vanishing neither resizes the row nor leaves the pill off-center. */
+  .plan-wrap{display:flex;flex-direction:column;align-items:center;justify-content:center;
+    min-height:48px;gap:3px}
+  .plan-note{color:var(--muted);font-size:11.5px;line-height:1.4;max-width:100%;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   /* Account column stays left-aligned; everything else centers under its header */
   th:first-child,td:first-child{text-align:left}
   tr:last-child td{border-bottom:none}
@@ -191,7 +205,9 @@
   .btn.primary:hover{filter:brightness(1.06);box-shadow:0 14px 36px -10px var(--accent-glow)}
   .btn:disabled{opacity:.45;cursor:not-allowed;transform:none;border-color:var(--border-strong);
     background:var(--surface-2);box-shadow:none;filter:none}
-  /* tactile press feedback (squish) — transform only, contained, no layout shift */
+  /* one shared small-button size for in-table actions (no ad-hoc inline styles) */
+  .btn.sm{padding:5px 12px;font-size:11.5px;border-radius:8px}
+  /* tactile press feedback (squish) - transform only, contained, no layout shift */
   .btn:active:not(:disabled){transform:scale(.95)}
   .nav:active{transform:scale(.97)}
 
@@ -244,7 +260,7 @@
     background-repeat:no-repeat;background-position:right 13px center;transition:.18s var(--ease)}
   .acct-pick:hover{border-color:var(--accent)}
   .acct-pick:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
-  /* dropdown list items — match the dark theme instead of OS gray */
+  /* dropdown list items - match the dark theme instead of OS gray */
   .acct-pick option{background:var(--surface-2);color:var(--text)}
   .acct-pick option:checked{background:var(--surface-3);color:var(--accent)}
   .acct-editor{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:20px}
@@ -252,7 +268,7 @@
   .acct-editor .panel .body > :last-child{margin-bottom:0}
   .check-row{display:flex;align-items:center;gap:10px;margin-bottom:16px;font-size:13px}
   .check-row label{cursor:pointer}
-  /* custom checkbox — themed to the dark palette (no white default fill) */
+  /* custom checkbox - themed to the dark palette (no white default fill) */
   .check-row input[type=checkbox]{
     appearance:none;-webkit-appearance:none;margin:0;flex:none;
     width:18px;height:18px;border-radius:6px;cursor:pointer;position:relative;
@@ -262,8 +278,9 @@
   .check-row input[type=checkbox]:checked{
     background:linear-gradient(140deg,var(--accent),var(--accent-2));border-color:transparent}
   .check-row input[type=checkbox]:checked::after{
-    content:"";position:absolute;left:6px;top:2px;width:4px;height:9px;
-    border:solid var(--accent-ink);border-width:0 2px 2px 0;transform:rotate(45deg)}
+    content:"";position:absolute;left:50%;top:50%;width:4px;height:9px;
+    border:solid var(--accent-ink);border-width:0 2px 2px 0;
+    transform:translate(-50%,-60%) rotate(45deg)}
   .check-row input[type=checkbox]:active{transform:scale(.9)}
   .check-row input[type=checkbox]:focus-visible{outline:none;box-shadow:0 0 0 3px var(--accent-dim)}
   @media (max-width:900px){.acct-editor{grid-template-columns:1fr}}
@@ -271,7 +288,7 @@
   /* actions cell: keep the button + toggle on one centered, vertically-aligned row */
   .cell-actions{display:inline-flex;align-items:center;justify-content:center;gap:10px}
 
-  /* "N hidden — show" control under the table */
+  /* "N hidden - show" control under the table */
   .table-foot{display:flex;align-items:center;justify-content:center;gap:10px;
     padding:13px 22px;border-top:1px solid var(--border);color:var(--muted);font-size:12.5px}
   .linkbtn{background:none;border:none;color:var(--accent);font:inherit;font-weight:600;
@@ -293,15 +310,20 @@
   .modal-scrim.show .modal{transform:none;opacity:1}
   .modal h3{margin:0 0 10px;font-family:var(--display);font-size:18px;font-weight:600;
     letter-spacing:-.01em}
-  .modal p{margin:0 0 22px;color:var(--muted);font-size:13.5px;line-height:1.6}
+  .modal p{margin:0 0 22px;color:var(--muted);font-size:13.5px;line-height:1.6;
+    white-space:pre-line}
+  .modal input{width:100%;padding:10px 13px;border-radius:10px;
+    border:1px solid var(--border-strong);background:rgba(12,10,9,.6);color:var(--text);
+    font-family:var(--mono);font-size:13px;margin:-8px 0 22px;transition:.18s var(--ease)}
+  .modal input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
   .modal .actions{display:flex;justify-content:flex-end;gap:10px}
   .btn.danger{background:linear-gradient(140deg,var(--short),#e8506a);color:#1c0709;
     border-color:transparent;box-shadow:0 10px 28px -12px rgba(251,113,133,.6)}
   .btn.danger:hover{filter:brightness(1.06)}
 
   /* ---------- Operations page ---------- */
-  .ops-grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:18px}
-  @media (max-width:1024px){.ops-grid{grid-template-columns:1fr}}
+  .ops-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));
+    gap:18px;margin-bottom:18px}
   .hazards{display:flex;flex-direction:column;gap:10px;margin-bottom:18px}
   .hazard{display:flex;align-items:center;gap:12px;padding:12px 16px;
     border-radius:var(--radius-sm);border:1px solid var(--border-strong);
@@ -315,12 +337,19 @@
   .hazard.warn .who{color:var(--warn)}
   .hazard.info{box-shadow:inset 3px 0 0 var(--idle)}
   .hazard.info .who{color:var(--idle)}
-  .planline{display:flex;align-items:flex-start;gap:12px;padding:13px 22px;
+  /* severity tag so the strip explains itself (color = severity, not firm/phase) */
+  .hazard .sev{flex:none;margin-left:auto;font-family:var(--mono);font-size:10px;
+    font-weight:600;text-transform:uppercase;letter-spacing:.06em;opacity:.8}
+  .hazard.danger .sev{color:var(--short)}
+  .hazard.action .sev{color:var(--accent-2)}
+  .hazard.warn .sev{color:var(--warn)}
+  .hazard.info .sev{color:var(--idle)}
+  .planline{display:flex;align-items:center;gap:12px;padding:13px 22px;
     border-bottom:1px solid var(--border);font-size:13px}
   .planline:last-child{border-bottom:none}
   .planline .act{flex:none;width:104px;text-align:center;padding:3px 0;border-radius:7px;
     font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.05em;
-    border:1px solid transparent;margin-top:1px}
+    border:1px solid transparent}
   .planline .act.MAP{color:var(--long);background:rgba(74,222,128,.12);border-color:rgba(74,222,128,.25)}
   .planline .act.MOVE{color:var(--warn);background:rgba(251,191,36,.12);border-color:rgba(251,191,36,.25)}
   .planline .act.UNMAP{color:var(--short);background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.25)}
@@ -336,6 +365,27 @@
   .mirror-add{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
     align-items:end}
   .mirror-add .btn{height:39px}
+
+  /* ---------- Analytics page ---------- */
+  .pill.win{color:var(--long);background:rgba(74,222,128,.12);border-color:rgba(74,222,128,.22)}
+  .pill.loss{color:var(--short);background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.22)}
+  .pill.flat{color:var(--idle);background:rgba(148,163,184,.12);border-color:rgba(148,163,184,.2)}
+  .chart-legend{display:flex;align-items:center;gap:18px;font-size:12px;color:var(--muted)}
+  .chart-legend .lg{display:inline-flex;align-items:center;gap:7px}
+  .chart-legend .lg i{width:14px;height:3px;border-radius:2px;display:inline-block}
+  #anaChart,#simChart{padding:10px 14px 6px}
+  #anaChart svg,#simChart svg{display:block;width:100%;height:auto}
+  #anaChart text,#simChart text{font-family:var(--mono);font-size:10.5px;fill:var(--faint)}
+  /* label : value rows (funnel, fleet equity) - aligned, static */
+  .statline{display:flex;align-items:center;justify-content:space-between;gap:12px;
+    padding:11px 22px;border-bottom:1px solid var(--border);font-size:13px}
+  .statline:last-child{border-bottom:none}
+  .statline .lbl{color:var(--muted)}
+  .statline .val{font-family:var(--mono);font-variant-numeric:tabular-nums;font-weight:600}
+  .statline .val .vs{color:var(--faint);font-weight:400;margin-left:7px}
+  .delta-pos{color:var(--long)}
+  .delta-neg{color:var(--short)}
+  .est-tag{color:var(--faint);font-size:10.5px;text-transform:uppercase;letter-spacing:.06em}
 
   .hidden{display:none}
   .toast{position:fixed;bottom:26px;right:26px;
@@ -396,17 +446,25 @@
         </svg>
       </span> TopHat
     </div>
-    <div class="nav" data-page="ops">
-      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
-      Operations
+    <div class="nav" data-page="analytics">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21.21 15.89A10 10 0 1 1 8 2.83"/><path d="M22 12A10 10 0 0 0 12 2v10z"/></svg>
+      Analytics
     </div>
     <div class="nav active" data-page="dashboard">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 13l3-4 4 3 5-7"/></svg>
       Trading
     </div>
+    <div class="nav" data-page="ops">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 5H7a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2h-2"/><rect x="9" y="3" width="6" height="4" rx="1"/><path d="M9 12h6M9 16h4"/></svg>
+      Operations
+    </div>
     <div class="nav" data-page="accounts">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
       Accounts
+    </div>
+    <div class="nav" data-page="sim">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M10 2v6.3L4.6 17.6A3 3 0 0 0 7.2 22h9.6a3 3 0 0 0 2.6-4.4L14 8.3V2"/><path d="M8.5 2h7"/><path d="M7.5 15h9"/></svg>
+      Simulation
     </div>
     <div class="nav" data-page="settings">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
@@ -437,31 +495,27 @@
         </div>
       </div>
       <div class="hazards" id="opsHazards"></div>
-      <div class="ops-grid">
-        <div>
-          <div class="panel" style="margin-bottom:18px">
-            <div class="head"><h2>Today's Copier Plan</h2><span class="muted" id="opsPlanCount"></span></div>
-            <div id="opsPlanLines"></div>
-          </div>
-          <div class="panel">
-            <div class="head"><h2>Buy list</h2><span class="muted">top up Mondays</span></div>
-            <div id="opsBuys"></div>
-          </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Today's Copier Plan</h2><span class="muted" id="opsPlanCount"></span></div>
+        <div id="opsPlanLines"></div>
+      </div>
+      <div class="ops-cards">
+        <div class="panel">
+          <div class="head"><h2>Signal channels</h2><span class="muted" id="opsChanMeta"></span></div>
+          <div id="opsChannels"></div>
         </div>
-        <div>
-          <div class="panel" style="margin-bottom:18px">
-            <div class="head"><h2>Signal channels</h2><span class="muted" id="opsChanMeta"></span></div>
-            <div id="opsChannels"></div>
-          </div>
-          <div class="panel" style="margin-bottom:18px">
-            <div class="head"><h2>Payout queue</h2></div>
-            <div id="opsPayouts"></div>
-          </div>
-          <div class="panel">
-            <div class="head"><h2>Mirror mappings</h2><span class="muted" id="opsMirrorMeta"></span></div>
-            <div id="opsMirrors"></div>
-          </div>
+        <div class="panel">
+          <div class="head"><h2>Payout queue</h2></div>
+          <div id="opsPayouts"></div>
         </div>
+        <div class="panel">
+          <div class="head"><h2>Buy list</h2><span class="muted">top up Mondays</span></div>
+          <div id="opsBuys"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="head"><h2>Mirror mappings</h2><span class="muted" id="opsMirrorMeta"></span></div>
+        <div id="opsMirrors"></div>
       </div>
     </section>
 
@@ -470,30 +524,30 @@
       <div class="topbar">
         <div><h1>Trading</h1><div class="sub" id="asOf">connecting…</div></div>
         <div class="row">
-          <button class="btn" id="btnPreview" title="Dry run: compute today's plan for every enabled account and show what would be placed — without sending any orders.">Preview day</button>
+          <button class="btn" id="btnPreview" title="Dry run: compute today's plan for every enabled account and show what would be placed - without sending any orders.">Preview day</button>
           <button class="btn primary" id="btnExecute">Execute</button>
         </div>
       </div>
       <div class="cards">
         <div class="card">
-          <div class="ch"><div class="k">Accounts</div>
+          <div class="ch"><div class="k">Active accounts</div>
             <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 7h18M3 12h18M3 17h18"/></svg></span></div>
-          <div class="v" id="cTotal">–</div>
+          <div class="v" id="cTotal">-</div>
         </div>
         <div class="card">
           <div class="ch"><div class="k">Funded</div>
             <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
-          <div class="v" id="cFunded">–</div>
+          <div class="v" id="cFunded">-</div>
         </div>
         <div class="card">
           <div class="ch"><div class="k">Eval</div>
             <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg></span></div>
-          <div class="v" id="cEval">–</div>
+          <div class="v" id="cEval">-</div>
         </div>
         <div class="card feature">
           <div class="ch"><div class="k">Drive · NY open</div>
             <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M23 6l-9.5 9.5-5-5L1 18"/><path d="M17 6h6v6"/></svg></span></div>
-          <div class="v sm" id="cDrive">–</div>
+          <div class="v sm" id="cDrive">-</div>
         </div>
       </div>
       <div id="acctGroups"></div>
@@ -502,10 +556,141 @@
       </div>
     </section>
 
+    <!-- ANALYTICS -->
+    <section id="page-analytics" class="hidden">
+      <div class="topbar">
+        <div><h1>Analytics</h1><div class="sub" id="anaSub">loading…</div></div>
+      </div>
+      <div class="cards">
+        <div class="card feature">
+          <div class="ch"><div class="k">Net cash <span class="est-tag">est.</span></div>
+            <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
+          <div class="v sm" id="anaNet">-</div>
+        </div>
+        <div class="card">
+          <div class="ch"><div class="k">Payouts banked</div>
+            <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 19V5M5 12l7-7 7 7"/></svg></span></div>
+          <div class="v sm" id="anaBanked">-</div>
+        </div>
+        <div class="card">
+          <div class="ch"><div class="k">Tickets spent <span class="est-tag">est.</span></div>
+            <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 5v14M19 12l-7 7-7-7"/></svg></span></div>
+          <div class="v sm" id="anaSpend">-</div>
+        </div>
+        <div class="card">
+          <div class="ch"><div class="k">Live eval pass rate</div>
+            <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg></span></div>
+          <div class="v sm" id="anaPass">-</div>
+        </div>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Profit over time</h2>
+          <span class="chart-legend">
+            <span class="lg"><i style="background:var(--flip)"></i>Realized P&amp;L (accounts)</span>
+            <span class="lg"><i style="background:var(--accent)"></i>Payouts banked</span>
+          </span></div>
+        <div id="anaChart"></div>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Live win rates vs backtest</h2><span class="muted" id="anaLegsMeta"></span></div>
+        <div class="tablewrap"><table style="min-width:860px">
+          <thead><tr><th>Leg</th><th>Trades</th><th>W / L / F</th><th>Live win rate</th>
+            <th>Backtest (drive)</th><th>Coin floor</th><th>Edge vs model</th><th>P&amp;L</th></tr></thead>
+          <tbody id="anaLegs"></tbody></table></div>
+      </div>
+      <div class="ops-cards">
+        <div class="panel">
+          <div class="head"><h2>Eval funnel</h2><span class="muted" id="anaFunnelMeta"></span></div>
+          <div id="anaFunnel"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Money spent <span class="est-tag">est. from fleet counts</span></h2></div>
+          <div id="anaSpendRows"></div>
+        </div>
+        <div class="panel">
+          <div class="head"><h2>Recent payouts</h2></div>
+          <div id="anaPayouts"></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="head"><h2>Recent trades</h2><span class="muted" id="anaRecentMeta"></span></div>
+        <div class="tablewrap"><table style="min-width:760px">
+          <thead><tr><th>Date</th><th>Account</th><th>Leg</th><th>Outcome</th>
+            <th>P&amp;L</th><th>Balance after</th></tr></thead>
+          <tbody id="anaRecent"></tbody></table></div>
+      </div>
+    </section>
+
+    <!-- SIMULATION -->
+    <section id="page-sim" class="hidden">
+      <div class="topbar">
+        <div><h1>Simulation</h1><div class="sub" id="simSub">loading…</div></div>
+        <div class="row">
+          <button class="btn" id="btnSimSaveTpl">Save template</button>
+          <button class="btn primary" id="btnSimRun">Run simulation</button>
+        </div>
+      </div>
+      <div class="grid2" id="simForm" style="margin-bottom:18px"></div>
+      <div id="simResults" class="hidden">
+        <div class="cards">
+          <div class="card feature">
+            <div class="ch"><div class="k" id="simSuccessLabel">Success</div>
+              <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><path d="M22 4 12 14.01l-3-3"/></svg></span></div>
+            <div class="v sm" id="simSuccess">-</div>
+          </div>
+          <div class="card">
+            <div class="ch"><div class="k">Median net / ticket</div>
+              <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg></span></div>
+            <div class="v sm" id="simNetMedian">-</div>
+          </div>
+          <div class="card">
+            <div class="ch"><div class="k">Accounts blown</div>
+              <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/></svg></span></div>
+            <div class="v sm" id="simBlow">-</div>
+          </div>
+          <div class="card">
+            <div class="ch"><div class="k">Median lifespan (days)</div>
+              <span class="chip"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/></svg></span></div>
+            <div class="v sm" id="simDays">-</div>
+          </div>
+        </div>
+        <div class="panel" style="margin-bottom:18px">
+          <div class="head"><h2>Net cash per ticket, day by day</h2>
+            <span class="chart-legend">
+              <span class="lg"><i style="background:var(--accent)"></i>Typical (median)</span>
+              <span class="lg"><i style="background:var(--accent);opacity:.35"></i>Middle 50%</span>
+              <span class="lg"><i style="background:var(--accent);opacity:.16"></i>Middle 80%</span>
+            </span></div>
+          <div id="simChart"></div>
+        </div>
+        <div class="ops-cards">
+          <div class="panel">
+            <div class="head"><h2>Ticket economics</h2></div>
+            <div id="simDist"></div>
+          </div>
+          <div class="panel">
+            <div class="head"><h2>Per-leg win rates</h2><span class="muted" id="simLegsMeta"></span></div>
+            <div class="tablewrap"><table style="min-width:0">
+              <thead><tr><th>Leg</th><th>Bracket</th><th>Days</th><th>Win rate</th>
+                <th>Coin floor</th><th>Model</th></tr></thead>
+              <tbody id="simLegs"></tbody></table></div>
+          </div>
+          <div class="panel">
+            <div class="head"><h2>Run info</h2></div>
+            <div id="simInfo"></div>
+          </div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:18px">
+        <div class="head"><h2>Saved templates</h2><span class="muted" id="simTplMeta"></span></div>
+        <div id="simTplList"></div>
+      </div>
+    </section>
+
     <!-- ACCOUNTS -->
     <section id="page-accounts" class="hidden">
       <div class="topbar">
-        <div><h1>Accounts</h1><div class="sub">Bootstrap lifecycle state · alias · enable/disable · persisted to <span class="mono">data/account_states.json</span></div></div>
+        <div><h1>Accounts</h1><div class="sub" id="acctSub">Lifecycle & registry editor</div></div>
         <button class="btn primary" id="btnSaveAcct" disabled>Save account</button>
       </div>
       <div class="panel">
@@ -524,14 +709,15 @@
             <div class="field">
               <label>Preset</label>
               <select class="acct-pick" id="acctPreset">
-                <option value="">— custom —</option>
-                <option value="eval_day_1">Eval — day 1</option>
-                <option value="eval_day_2">Eval — day 2</option>
-                <option value="eval_day_3">Eval — day 3</option>
-                <option value="funded_nuke_1">Funded — nuke try 1</option>
-                <option value="funded_nuke_2">Funded — nuke try 2 (recovery)</option>
-                <option value="flip_0">Funded — flip 0/5 (post-nuke)</option>
-                <option value="flip_3">Funded — flip 3/5</option>
+                <option value="">custom</option>
+                <option value="eval_day_1">Eval - day 1</option>
+                <option value="eval_day_2">Eval - day 2</option>
+                <option value="eval_day_3">Eval - day 3</option>
+                <option value="funded_nuke_1">Funded - nuke try 1</option>
+                <option value="funded_nuke_2">Funded - nuke try 2 (recovery)</option>
+                <option value="flip_1">Funded - flips after nuke (1/5)</option>
+                <option value="flip_3">Funded - flip 3/5</option>
+                <option value="flip_cycle">Funded - flip-only cycle (payout 2)</option>
                 <option value="payout_ready">Payout ready</option>
                 <option value="passed">Eval passed</option>
                 <option value="blown">Blown</option>
@@ -559,19 +745,17 @@
             <div class="field"><label>Notes</label><input id="f_notes" type="text" placeholder="Operator notes"></div>
             <div class="check-row"><input type="checkbox" id="f_enabled"><label for="f_enabled">Enabled in TopHat</label></div>
             <div class="check-row"><input type="checkbox" id="f_force_inactive"><label for="f_force_inactive">Mark inactive (override broker)</label></div>
-            <div class="hint" style="margin:-6px 0 14px">Use when Topstep shows ineligible but API still reports canTrade=true.</div>
+            <div class="check-row"><input type="checkbox" id="f_exclude_analytics"><label for="f_exclude_analytics">Exclude from analytics</label></div>
             <div class="field"><label for="f_signal_plan">Signal channel</label>
               <select class="acct-pick" id="f_signal_plan">
-                <option value="">— none (strategy account) —</option>
+                <option value="">none (strategy account)</option>
                 <option value="apex-nuke">apex-nuke · $1,300 nuke (32.5/25pt × 2 minis)</option>
                 <option value="apex-flip">apex-flip · $325 flip (16.25/50pt × 1 mini)</option>
                 <option value="apex-eval">apex-eval · 1-day $3,000 (30/10pt × 5 minis)</option>
-              </select>
-              <div class="hint">Designates this account as a copier signal leader — it fires this bracket daily and leaves the strategy fleet. Use the practice account or a disposable micro eval.</div></div>
+              </select></div>
             <div class="field"><label>Equity ($)</label><input id="f_equity" type="number" step="0.01"></div>
             <div class="field"><label>Peak equity EOD ($)</label><input id="f_peak" type="number" step="0.01"></div>
-            <div class="field"><label>Base balance ($)</label><input id="f_base" type="number" step="0.01">
-              <div class="hint">$50,000 for eval · $0 for funded Express</div></div>
+            <div class="field"><label>Base balance ($)</label><input id="f_base" type="number" step="0.01"></div>
             <div class="check-row"><input type="checkbox" id="f_sync_balance"><label for="f_sync_balance">Sync equity & peak from broker balance on save</label></div>
           </div>
         </div>
@@ -580,7 +764,7 @@
       <!-- MIRROR (follower) ACCOUNTS -->
       <div class="panel" style="margin-top:20px">
         <div class="head"><h2>Mirror accounts</h2>
-          <span class="muted">API-less follower firms · balances inferred, synced manually</span></div>
+          <span class="muted">balances inferred</span></div>
         <div class="body" style="padding:18px 22px">
           <div class="mirror-add">
             <div class="field" style="margin:0"><label for="m_firm">Firm</label>
@@ -595,9 +779,6 @@
               <input id="m_alias" placeholder="display name" autocomplete="off"></div>
             <button class="btn primary" id="btnAddMirror">Add mirror(s)</button>
           </div>
-          <div class="hint" style="margin-top:10px">New mirrors start as fresh evals at the
-            firm's copier scale (Tradeify pre-fills 0.8×). Paste several account numbers
-            comma-separated to bulk-add.</div>
         </div>
         <div class="tablewrap"><table id="mirrorTable" style="min-width:900px">
           <thead><tr><th>Mirror</th><th>Firm</th><th>Phase</th><th>Leader</th><th>Mult</th>
@@ -609,7 +790,7 @@
     <!-- SETTINGS -->
     <section id="page-settings" class="hidden">
       <div class="topbar">
-        <div><h1>Settings</h1><div class="sub">Strategy & automation parameters · persisted to <span class="mono">data/settings.json</span></div></div>
+        <div><h1>Settings</h1><div class="sub">Strategy & automation parameters</div></div>
         <button class="btn primary" id="btnSave">Save settings</button>
       </div>
       <div class="panel" style="margin-bottom:18px">
@@ -622,13 +803,12 @@
             <input id="newApiKey" placeholder="API key" autocomplete="off" autocapitalize="off" spellcheck="false">
             <button class="btn primary" id="btnAddKey">Add API key</button>
           </div>
-          <div class="hint" style="margin-top:12px">Each username's accounts get their own dashboard table and run their own daily rules (one nuke/day per user).</div>
         </div>
       </div>
       <div class="grid2">
         <div class="panel"><div class="head"><h2>Account & risk</h2></div><div style="padding:18px 22px" id="secAccount"></div></div>
         <div class="panel"><div class="head"><h2>Eval</h2></div><div style="padding:18px 22px" id="secEval"></div></div>
-        <div class="panel"><div class="head"><h2>Funded — nuke & flip</h2></div><div style="padding:18px 22px" id="secFunded"></div></div>
+        <div class="panel"><div class="head"><h2>Funded - nuke & flip</h2></div><div style="padding:18px 22px" id="secFunded"></div></div>
         <div class="panel"><div class="head"><h2>Automation</h2></div><div style="padding:18px 22px" id="secAuto"></div></div>
       </div>
     </section>
@@ -640,6 +820,7 @@
   <div class="modal">
     <h3 id="modalTitle">Confirm</h3>
     <p id="modalBody"></p>
+    <input id="modalInput" class="hidden" autocomplete="off" spellcheck="false">
     <div class="actions">
       <button class="btn" id="modalCancel">Cancel</button>
       <button class="btn primary" id="modalConfirm">Confirm</button>
@@ -650,8 +831,8 @@
 
 <script>
 const $ = s => document.querySelector(s);
-const fmt = n => (n==null?'–':Number(n).toLocaleString('en-US',{maximumFractionDigits:0}));
-const fmtUsd = n => (n==null?'–':'$'+Number(n).toLocaleString('en-US',{maximumFractionDigits:0}));
+const fmt = n => (n==null?'-':Number(n).toLocaleString('en-US',{maximumFractionDigits:0}));
+const fmtUsd = n => (n==null?'-':'$'+Number(n).toLocaleString('en-US',{maximumFractionDigits:0}));
 
 // ---- timezone: backend schedules in ET; the UI shows the viewer's local time ----
 const ET_ZONE = 'America/New_York';
@@ -687,6 +868,25 @@ function fmtAsOf(iso, fallback){
     + `${d.toLocaleTimeString(undefined,{hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false})} `
     + `${localTzAbbr()}`;
 }
+// convert a local "HH:MM" (today) back to the ET wall time the backend stores
+function localToEtHHMM(hhmm){
+  if(!hhmm || !/^\d{1,2}:\d{2}$/.test(hhmm)) return hhmm;
+  const [h,m] = hhmm.split(':').map(Number);
+  const d = new Date(); d.setHours(h,m,0,0);
+  const p = new Intl.DateTimeFormat('en-US',{timeZone:ET_ZONE,hour12:false,
+    hour:'2-digit',minute:'2-digit'}).formatToParts(d)
+    .reduce((a,x)=>{a[x.type]=x.value;return a;},{});
+  return `${p.hour==='24'?'00':p.hour}:${p.minute}`;
+}
+// backend stamps like "2026-07-04 09:45:12 ET" -> local date + HH:MM + tz
+function etStampToLocal(s){
+  const m = /^(\d{4}-\d{2}-\d{2}) (\d{1,2}:\d{2})/.exec(s||'');
+  if(!m) return s||'';
+  return `${m[1]} ${etToLocalHHMM(m[2])} ${localTzAbbr()}`;
+}
+// notes may embed ET wall times ("fires 09:45 ET") - show them in local time
+const locNote = s => String(s??'').replace(/\b(\d{1,2}:\d{2})(?::\d{2})?\s*ET\b/g,
+  (_,t)=>`${etToLocalHHMM(t)} ${localTzAbbr()}`);
 
 function toast(msg){const t=$('#toast');t.textContent=msg;t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'),1900);}
@@ -697,12 +897,29 @@ function confirmModal({title='Confirm', body='', confirmText='Confirm', danger=f
   const scrim=$('#modalScrim');
   $('#modalTitle').textContent=title;
   $('#modalBody').textContent=body;
+  $('#modalInput').classList.add('hidden');
   const btn=$('#modalConfirm');
   btn.textContent=confirmText;
   btn.className='btn '+(danger?'danger':'primary');
   scrim.classList.add('show');
   setTimeout(()=>btn.focus(),0);
   return new Promise(res=>{ _modalResolve=res; });
+}
+// themed input dialog (replaces native prompt()) -> resolves to string or null
+function promptModal({title='Enter a value', body='', confirmText='OK',
+                      value='', placeholder=''}={}){
+  const scrim=$('#modalScrim');
+  $('#modalTitle').textContent=title;
+  $('#modalBody').textContent=body;
+  const inp=$('#modalInput');
+  inp.classList.remove('hidden');
+  inp.value=value; inp.placeholder=placeholder;
+  const btn=$('#modalConfirm');
+  btn.textContent=confirmText;
+  btn.className='btn primary';
+  scrim.classList.add('show');
+  setTimeout(()=>{inp.focus(); inp.select();},0);
+  return new Promise(res=>{ _modalResolve=ok=>res(ok?inp.value:null); });
 }
 function closeModal(val){
   $('#modalScrim').classList.remove('show');
@@ -723,7 +940,7 @@ async function jfetch(url, opts){
   if(r.status===401){ location.href='/login'; throw new Error('unauthorized'); }
   return r;
 }
-// router (page nav only — sign-out is separate)
+// router (page nav only - sign-out is separate)
 let CUR_PAGE='dashboard';
 document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
   document.querySelectorAll('.nav[data-page]').forEach(x=>x.classList.remove('active'));
@@ -732,11 +949,15 @@ document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
   CUR_PAGE=p;
   $('#page-ops').classList.toggle('hidden',p!=='ops');
   $('#page-dashboard').classList.toggle('hidden',p!=='dashboard');
+  $('#page-analytics').classList.toggle('hidden',p!=='analytics');
+  $('#page-sim').classList.toggle('hidden',p!=='sim');
   $('#page-accounts').classList.toggle('hidden',p!=='accounts');
   $('#page-settings').classList.toggle('hidden',p!=='settings');
   if(p==='settings'){ loadSettings(); loadCredentials(); }
   if(p==='accounts') loadAccountsPage();
   if(p==='ops') loadOps();
+  if(p==='analytics') loadAnalytics();
+  if(p==='sim') loadSim();
 });
 $('#btnLogout').onclick = async () => {
   await fetch('/api/logout',{method:'POST'});
@@ -757,7 +978,7 @@ async function pollAuto(){
     const armed = a.auto_execute, run = a.running;
     $('#autoLabel').textContent = !armed ? 'DISARMED' : (run ? 'ARMED' : 'STOPPED');
     $('#autoDot').style.color = !armed ? 'var(--idle)' : (a.last_error ? 'var(--short)' : 'var(--long)');
-    $('#autoStatus').title = a.last_tick ? `last tick ${a.last_tick} · ${a.orders_last_tick} placed` : 'no ticks yet';
+    $('#autoStatus').title = a.last_tick ? `last tick ${etStampToLocal(a.last_tick)} · ${a.orders_last_tick} placed` : 'no ticks yet';
   }catch(e){}
 }
 
@@ -773,22 +994,24 @@ function planPill(a){
   return `<span class="pill ${cls}">${label}</span>`;
 }
 function planCellHtml(a){
-  // Terminal accounts have no plan — show a neutral dash, never a "blown" pill.
-  if(a.terminal) return '<span class="muted">—</span>';
-  const note = `<div class="muted" style="margin-top:4px;font-size:11.5px">${a.plan_note||''}</div>`;
-  // The withdrawal action lives with the PAYOUT READY status — keeps the Enabled
+  // Terminal accounts have no plan - show a neutral dash, never a "blown" pill.
+  // .plan-wrap keeps a fixed height with the content vertically centered, so a
+  // note appearing/vanishing neither resizes the row nor un-centers the pill.
+  if(a.terminal) return '<div class="plan-wrap"><span class="muted">-</span></div>';
+  const note = a.plan_note
+    ? `<div class="plan-note" title="${esc(locNote(a.plan_note))}">${esc(locNote(a.plan_note))}</div>` : '';
+  // The withdrawal action lives with the PAYOUT READY status - keeps the Enabled
   // column's toggles aligned across every row.
   const payBtn = a.payout_ready
-    ? `<button class="btn" style="padding:5px 12px;font-size:11.5px;margin-top:9px"
-         onclick="markPaid(${a.account_id})">Mark withdrawn</button>` : '';
-  return `${planPill(a)}${note}${payBtn}`;
+    ? `<button class="btn sm" onclick="markPaid(${a.account_id})">Mark withdrawn</button>` : '';
+  return `<div class="plan-wrap">${planPill(a)}${note}${payBtn}</div>`;
 }
 function accountForDisplay(a){
   const enabled = pendingToggle.has(a.account_id) ? pendingToggle.get(a.account_id) : a.enabled;
   if(enabled === a.enabled) return a;
   if(!enabled){
     // Payout-ready/terminal accounts show that state regardless of enable, so the
-    // backend keeps it after refresh — don't optimistically flip to "disabled".
+    // backend keeps it after refresh - don't optimistically flip to "disabled".
     if(a.payout_ready || a.terminal) return {...a, enabled:false};
     return {...a, enabled:false, plan_action:'disabled', plan_side:'', plan_entry:'',
       plan_contracts:0, plan_note:''};
@@ -803,19 +1026,28 @@ function applyPlanCell(tr, a){
 }
 
 function rowShouldDim(enabled, phase){
-  // Terminal accounts are only shown when explicitly revealed — always de-emphasized.
+  // Terminal accounts are only shown when explicitly revealed - always de-emphasized.
   if(['passed','blown','retired'].includes(phase)) return true;
   return !enabled;
 }
-function applyRowDim(tr, enabled, phase){
-  tr.classList.toggle('dim', rowShouldDim(enabled, phase));
+// One place decides row brightness: disabled/terminal -> .dim (.42), enabled but
+// broker-inactive -> .row-inactive (.72), else full. Managing BOTH classes here is
+// what makes the brightness change instant on toggle (row-inactive has higher CSS
+// specificity than .dim, so a leftover copy used to win until the next render).
+function applyRowState(tr, a, enabled){
+  const dim = rowShouldDim(enabled, a.phase);
+  tr.classList.toggle('dim', dim);
+  tr.classList.toggle('row-inactive', !dim && !a.can_trade && !a.terminal);
 }
+// aid -> desired enabled state. Held from the click until a server snapshot
+// CONFIRMS the value (render clears it), so a stale/late push can never flip a
+// row back to its pre-toggle state.
 const pendingToggle = new Map();
 let LAST_SNAP = null;
 
 // Optimistic plan for a row mid-toggle: cap-aware for the capped eval/nuke slots so
 // enabling an over-cap account shows it "waiting" instantly (matches the backend's
-// enabled-order tiebreaker) — no flicker waiting for the server to recompute slots.
+// enabled-order tiebreaker) - no flicker waiting for the server to recompute slots.
 const SLOT_CFG = {
   eval: {capKey:'max_evals_per_day', dflt:2, actions:['eval'],          note:'waiting for an eval slot'},
   nuke: {capKey:'max_nukes_per_day', dflt:1, actions:['nuke','renuke'], note:'waiting for a nuke slot'},
@@ -849,13 +1081,9 @@ function buildRow(a){
   tr.dataset.phase = a.phase;
   tr.dataset.aid = String(a.account_id);
   tr.dataset.account = JSON.stringify(a);
-  const view = accountForDisplay(a);
+  const view = optimisticView(a);
   const enabled = view.enabled;
-  // Disabled/terminal rows dim to .42; only an ENABLED-but-inactive row gets the
-  // lighter .72 "inactive" look. (Avoids row-inactive out-specifying .dim so a
-  // disabled+inactive row no longer renders brighter than other disabled rows.)
-  if(rowShouldDim(enabled, a.phase)) tr.classList.add('dim');
-  else if(!a.can_trade && !a.terminal) tr.classList.add('row-inactive');
+  applyRowState(tr, a, enabled);
   if(a.phase==='passed') tr.classList.add('row-passed');
   if(a.phase==='blown') tr.classList.add('row-blown');
   // Phase column shows the program type (eval/funded); Status carries the rest.
@@ -871,66 +1099,104 @@ function buildRow(a){
     <td class="muted">${a.lifecycle}${pend}</td>
     <td class="mono">${fmtUsd(a.balance)}</td>
     <td class="plan-cell">${planCellHtml(view)}</td>
-    <td class="mono ${a.open_position?'':'muted'}">${a.open_position||'–'}</td>
+    <td class="mono ${a.open_position?'':'muted'}">${a.open_position||'-'}</td>
     <td><span class="cell-actions"><label class="sw"><input type="checkbox" ${enabled?'checked':''}
       onchange="toggleAcct(${a.account_id}, this)"><span class="track"></span><span class="thumb"></span></label></span></td>`;
   return tr;
 }
 
+// Shared column template: fixed-layout tables + one colgroup mean every owner's
+// table gets IDENTICAL column widths, so stacked tables always line up.
+const COLGROUP = `<colgroup>
+  <col style="width:20%"><col style="width:9%"><col style="width:8%">
+  <col style="width:15%"><col style="width:10%"><col style="width:21%">
+  <col style="width:7%"><col style="width:10%">
+</colgroup>`;
+// The master switch sits in the Enabled header cell, stacked under the label -
+// centered in the same fixed-width column as the row toggles, so they line up.
 const THEAD = `<thead><tr>
   <th>Account</th><th>Status</th><th>Phase</th><th>Lifecycle</th><th>Balance</th>
-  <th>Today's plan</th><th>Position</th><th>Enabled</th>
+  <th>Today's plan</th><th>Position</th>
+  <th><span class="th-enabled">Enabled
+    <label class="sw" title="Enable or disable every account in this table">
+      <input type="checkbox" class="js-allsw"><span class="track"></span><span class="thumb"></span>
+    </label></span></th>
 </tr></thead>`;
 
 // One dashboard table per credential/username. Each owner's accounts live in
-// their own panel, titled with the username — rules are scoped per owner.
+// their own panel, titled with the username - rules are scoped per owner.
 function buildGroupPanel(g){
   const panel = document.createElement('div');
   panel.className = 'panel';
   panel.style.marginBottom = '18px';
-  const title = g.owner || 'Account';
+  const title = esc(g.owner || 'Account');
   if(g.error){
     panel.innerHTML = `<div class="head"><h2>${title}</h2>
       <span class="pill short">unavailable</span></div>
-      <div style="padding:18px 22px" class="muted">${g.error}</div>`;
+      <div style="padding:18px 22px" class="muted">${esc(g.error)}</div>`;
     return panel;
   }
   const c = g.counts || {total:0};
-  const meta = [`${c.total} account${c.total===1?'':'s'}`, g.nq_contract].filter(Boolean).join(' · ');
+  // The traded instrument is always NQ - the raw contract id (which rolls
+  // quarterly) stays available on hover instead of cluttering the header.
+  const meta = [`${c.total} account${c.total===1?'':'s'}`, g.nq_contract?'NQ':'']
+    .filter(Boolean).join(' · ');
   panel.innerHTML = `<div class="head"><h2>${title}</h2>
-      <span class="muted mono">${meta}</span></div>
-    <div class="tablewrap"><table>${THEAD}<tbody></tbody></table></div>
+      <span class="muted mono" title="${esc(g.nq_contract||'')}">${meta}</span></div>
+    <div class="tablewrap"><table class="acct">${COLGROUP}${THEAD}<tbody></tbody></table></div>
     <div class="table-foot hidden"></div>`;
+  const allSw = panel.querySelector('.js-allsw');
+  allSw.dataset.owner = g.owner||'';
+  const togglable = (g.accounts||[]).filter(a=>!a.terminal);
+  allSw.checked = togglable.length>0 && togglable.every(effEnabled);
+  allSw.disabled = !togglable.length;
+  allSw.onchange = ()=>toggleAllGroup(g, allSw.checked);
   const body = panel.querySelector('tbody');
-  const active=[], terminal=[];
-  for(const a of (g.accounts||[])){ (a.terminal?terminal:active).push(a); }
-  if(!active.length && !(showHidden && terminal.length)){
+  // Hidden rows: closed accounts plus inactive ones - revealed by the footer's
+  // show/hide control. Signal channels stay visible (they fire even on
+  // inactive/practice accounts).
+  const active=[], hidden=[];
+  for(const a of (g.accounts||[])){
+    (a.terminal || (!a.can_trade && !a.signal_plan) ? hidden : active).push(a);
+  }
+  if(!active.length && !(showHidden && hidden.length)){
     body.innerHTML = `<tr><td colspan="8" class="muted" style="text-align:center">
-      ${terminal.length ? 'no active accounts' : 'no accounts'}</td></tr>`;
+      ${hidden.length ? 'no active accounts' : 'no accounts'}</td></tr>`;
   } else {
     for(const a of active) body.appendChild(buildRow(a));
-    if(showHidden) for(const a of terminal) body.appendChild(buildRow(a));
+    if(showHidden) for(const a of hidden) body.appendChild(buildRow(a));
   }
   const foot = panel.querySelector('.table-foot');
-  if(terminal.length){
+  if(hidden.length){
     foot.classList.remove('hidden');
-    const n=terminal.length;
+    const n=hidden.length;
     foot.innerHTML = showHidden
-      ? `<span>${n} closed account${n>1?'s':''} (blown / passed / retired)</span>
+      ? `<span>${n} account${n>1?'s':''} (closed or inactive)</span>
          <button class="linkbtn" onclick="toggleHidden()">hide</button>`
-      : `<span>${n} closed account${n>1?'s':''} hidden</span>
+      : `<span>${n} account${n>1?'s':''} hidden (closed or inactive)</span>
          <button class="linkbtn" onclick="toggleHidden()">show</button>`;
   }
   return panel;
 }
 
+let _lastGroupsSig = '';
 function render(s){
   LAST_SNAP = s;
-  $('#asOf').textContent = `${fmtAsOf(s.as_of_iso, s.as_of)} · ${s.counts.total} accounts · drive from ${s.drive_source||'—'}`;
+  // A snapshot that reflects a pending toggle CONFIRMS it - release the hold.
+  // Until then the pending value keeps overriding what stale pushes may carry.
+  for(const a of (s.accounts||[])){
+    if(pendingToggle.has(a.account_id) && !toggleRunning.has(a.account_id)
+       && a.enabled === pendingToggle.get(a.account_id))
+      pendingToggle.delete(a.account_id);
+  }
+  // Stat cards count only VISIBLE rows - closed/inactive accounts sit in the
+  // hidden footer and must not inflate the fleet numbers.
+  const vis = (s.accounts||[]).filter(a=>!a.terminal && (a.can_trade || a.signal_plan));
+  $('#asOf').textContent = `Daily plans & execution · ${vis.length} active account${vis.length===1?'':'s'} · drive from ${locNote(s.drive_source||'-')}`;
   $('#modeLabel').textContent = s.mode;
-  $('#cTotal').textContent = s.counts.total;
-  $('#cFunded').textContent = s.counts.funded;
-  $('#cEval').textContent = s.counts.eval;
+  $('#cTotal').textContent = vis.length;
+  $('#cFunded').textContent = vis.filter(a=>a.phase==='funded').length;
+  $('#cEval').textContent = vis.filter(a=>a.phase==='eval').length;
   const d=(s.drive||'FLAT').toLowerCase();
   $('#cDrive').innerHTML = `<span class="pill ${d}">${s.drive}</span>`;
   // Manual Execute is for hands-on firing while disarmed; when automation is armed
@@ -939,47 +1205,93 @@ function render(s){
   $('#btnExecute').title = 'Place live orders for today\'s plan now';
 
   const host = $('#acctGroups');
-  host.innerHTML = '';
   const groups = s.groups && s.groups.length
     ? s.groups
     : [{owner:'Account', accounts:s.accounts||[], counts:s.counts, nq_contract:s.nq_contract}];
   if(!groups.length){
     host.innerHTML = `<div class="panel"><div style="padding:22px" class="muted">
       No API keys configured. Add one in <b>Settings → API keys</b> to see accounts.</div></div>`;
+    _lastGroupsSig = '';
     return;
   }
+  // Rebuild the tables only when their content actually changed - an identical
+  // 3s WS push would otherwise wipe hover states and swallow in-flight clicks.
+  const sig = JSON.stringify([groups, showHidden, [...pendingToggle]]);
+  if(sig === _lastGroupsSig) return;
+  _lastGroupsSig = sig;
+  host.innerHTML = '';
   for(const g of groups) host.appendChild(buildGroupPanel(g));
 }
-function toggleHidden(){ showHidden=!showHidden; refresh(); }
+function toggleHidden(){
+  showHidden=!showHidden;
+  if(LAST_SNAP) render(LAST_SNAP); else refresh();
+}
 
 const toggleRunning = new Set();   // accounts with an in-flight sync loop
 async function toggleAcct(id, el){
   const tr = el.closest('tr');
-  const phase = tr.dataset.phase || '';
   const base = JSON.parse(tr.dataset.account || '{}');
-  // The checkbox is NEVER disabled — record the latest desired state and reflect it
+  // The checkbox is NEVER disabled - record the latest desired state and reflect it
   // instantly so rapid clicks are never dropped. el.checked already flipped (native).
   pendingToggle.set(id, el.checked);
-  applyRowDim(tr, el.checked, phase);
+  applyRowState(tr, base, el.checked);
   applyPlanCell(tr, optimisticView(base));
+  syncMasterToggles();
   if(toggleRunning.has(id)) return;          // a loop is already syncing this account
   toggleRunning.add(id);
   try {
     // Idempotent set-enabled, resent until the server matches the latest desired
-    // state — coalesces a burst of clicks into the final value (no flip races).
+    // state - coalesces a burst of clicks into the final value (no flip races).
     while(true){
       const want = pendingToggle.get(id);
-      const r = await (await jfetch(`/api/accounts/${id}/set-enabled`, {method:'POST',
-        headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:want})})).json();
-      if(pendingToggle.get(id) === want){ pendingToggle.set(id, r.enabled); break; }
+      await jfetch(`/api/accounts/${id}/set-enabled`, {method:'POST',
+        headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:want})});
+      if(pendingToggle.get(id) === want) break;
     }
-    await refresh();
   } catch(e) {
-    await refresh().catch(()=>{});           // resync from server on failure
+    pendingToggle.delete(id);                // resync to the server's truth
   } finally {
     toggleRunning.delete(id);
-    pendingToggle.delete(id);
   }
+  // pendingToggle[id] stays set until a snapshot carrying the desired value
+  // arrives (render clears it) - late/stale pushes can't flip the row back.
+  refresh().catch(()=>{});
+}
+
+// Per-panel master switch: enable/disable every (non-terminal) account at once.
+// Rows update IN PLACE (no table rebuild) so every toggle thumb slides with its
+// CSS transition instead of snapping to the new state on re-render.
+async function toggleAllGroup(g, on){
+  const ids = new Set((g.accounts||[]).filter(a=>!a.terminal).map(a=>a.account_id));
+  if(!ids.size) return;
+  for(const id of ids) pendingToggle.set(id, on);
+  document.querySelectorAll('tr[data-aid]').forEach(tr=>{
+    const id = parseInt(tr.dataset.aid, 10);
+    if(!ids.has(id)) return;
+    const base = JSON.parse(tr.dataset.account || '{}');
+    const cb = tr.querySelector('.sw input');
+    if(cb) cb.checked = on;
+    applyRowState(tr, base, on);
+    applyPlanCell(tr, optimisticView(base));
+  });
+  syncMasterToggles();
+  try {
+    await jfetch('/api/accounts/set-enabled', {method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ids:[...ids], enabled:on})});
+  } catch(e) {
+    for(const id of ids) if(!toggleRunning.has(id)) pendingToggle.delete(id);
+  }
+  refresh().catch(()=>{});
+}
+// Recompute each panel's master switch from current data + pending toggles.
+function syncMasterToggles(){
+  document.querySelectorAll('.js-allsw').forEach(sw=>{
+    const g = ((LAST_SNAP&&LAST_SNAP.groups)||[]).find(x=>(x.owner||'')===sw.dataset.owner);
+    if(!g) return;
+    const togglable = (g.accounts||[]).filter(a=>!a.terminal);
+    sw.checked = togglable.length>0 && togglable.every(effEnabled);
+  });
 }
 async function refresh(){
   const s=await (await jfetch('/api/state')).json(); render(s); pollAuto();
@@ -987,7 +1299,7 @@ async function refresh(){
 $('#btnPreview').onclick=async()=>{
   const r=await (await jfetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({execute:false})})).json();
-  showResults(r,'Preview — dry run · no orders placed');
+  showResults(r,'Preview - dry run · no orders placed');
 };
 $('#btnExecute').onclick=async()=>{
   const ok = await confirmModal({
@@ -1006,10 +1318,10 @@ function showResults(r,title){
   const lines=r.results.map(x=>{
     const owner=x.owner?`[${x.owner}] `:'';
     const bits=[`${owner}#${x.account_id}`,(x.action||'').padEnd(7)];
-    if(x.side) bits.push(`${x.side} ×${x.contracts} @${etToLocalHHMM(x.entry_time)||'—'}`);
+    if(x.side) bits.push(`${x.side} ×${x.contracts} @${etToLocalHHMM(x.entry_time)||'-'}`);
     if(x.order_id) bits.push(`order ${x.order_id}`);
-    if(x.skipped) bits.push(`SKIPPED: ${x.skipped}`);
-    if(x.note&&!x.side) bits.push(x.note);
+    if(x.skipped) bits.push(`SKIPPED: ${locNote(x.skipped)}`);
+    if(x.note&&!x.side) bits.push(locNote(x.note));
     return bits.join('  ');
   });
   el.textContent = `${title} · drive ${r.drive}\n`+lines.join('\n');
@@ -1030,12 +1342,15 @@ const SCHEMA=[
     ['payout_cap','Payout cap ($)'],['winning_days_required','Winning days / payout'],
     ['payouts_target','Payouts then retire']]],
   ['secAuto',[
-    ['nuke_entry_time','Nuke entry time (ET)'],['flip_stagger_times','Flip stagger times (ET, comma-sep)'],
+    ['nuke_entry_time',`Nuke entry time (${localTzAbbr()||'local'})`],
+    ['flip_stagger_times',`Flip stagger times (${localTzAbbr()||'local'}, comma-sep)`],
     ['max_nukes_per_day','Max nukes / day'],['max_evals_per_day','Max evals / day'],
     ['auto_execute','Auto-execute (true/false)'],
     ['auto_disable_on_payout_ready','Auto-disable on payout (true/false)'],
     ['hedge_guard','Hedge guard (true/false)']]],
 ];
+// Time fields are entered and shown in the viewer's LOCAL timezone; the backend
+// stores and schedules in ET, so loadSettings/save convert both ways.
 let SETTINGS={};
 async function loadSettings(){
   SETTINGS=await (await jfetch('/api/settings')).json();
@@ -1043,7 +1358,8 @@ async function loadSettings(){
     const host=$('#'+sec); host.innerHTML='';
     for(const [key,label] of fields){
       let v=SETTINGS[key];
-      if(Array.isArray(v)) v=v.join(', ');
+      if(key==='nuke_entry_time') v=etToLocalHHMM(v);
+      if(Array.isArray(v)) v=(key==='flip_stagger_times'?v.map(etToLocalHHMM):v).join(', ');
       const f=document.createElement('div'); f.className='field';
       f.innerHTML=`<label>${label}</label><input data-key="${key}" value="${v}">`;
       host.appendChild(f);
@@ -1054,9 +1370,10 @@ $('#btnSave').onclick=async()=>{
   const patch={};
   document.querySelectorAll('#page-settings input[data-key]').forEach(inp=>{
     const k=inp.dataset.key; let v=inp.value.trim();
-    if(k==='flip_stagger_times') v=v.split(',').map(x=>x.trim()).filter(Boolean);
+    if(k==='flip_stagger_times') v=v.split(',').map(x=>localToEtHHMM(x.trim())).filter(Boolean);
+    else if(k==='nuke_entry_time') v=localToEtHHMM(v);
     else if(['auto_execute','auto_disable_on_payout_ready','hedge_guard'].includes(k)) v=(v.toLowerCase()==='true');
-    else if(!['nuke_entry_time'].includes(k) && !isNaN(parseFloat(v))) v=parseFloat(v);
+    else if(!isNaN(parseFloat(v))) v=parseFloat(v);
     patch[k]=v;
   });
   await jfetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
@@ -1080,7 +1397,7 @@ async function loadCredentials(){
 function renderCredentials(){
   const host=$('#apiKeyList'); host.innerHTML='';
   if(!CREDS.length){
-    host.innerHTML=`<div class="muted" style="font-size:12.5px">No API keys yet — add your first below.</div>`;
+    host.innerHTML=`<div class="muted" style="font-size:12.5px">No API keys yet - add your first below.</div>`;
     return;
   }
   for(const c of CREDS){
@@ -1142,10 +1459,14 @@ const PRESETS = {
     nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false, base_balance:0},
   funded_nuke_2: {phase:'funded', days_traded:0, payouts_taken:0, winning_days_this_cycle:0,
     nuke_tries_this_cycle:1, nuke_hit_this_cycle:false, payout_ready:false, base_balance:0},
-  flip_0: {phase:'funded', days_traded:0, payouts_taken:0, winning_days_this_cycle:0,
+  // A landed nuke IS the cycle's first winning day, so post-nuke starts at 1/5.
+  flip_1: {phase:'funded', days_traded:1, payouts_taken:0, winning_days_this_cycle:1,
     nuke_tries_this_cycle:1, nuke_hit_this_cycle:true, payout_ready:false, base_balance:0},
-  flip_3: {phase:'funded', days_traded:0, payouts_taken:0, winning_days_this_cycle:3,
+  flip_3: {phase:'funded', days_traded:3, payouts_taken:0, winning_days_this_cycle:3,
     nuke_tries_this_cycle:1, nuke_hit_this_cycle:true, payout_ready:false, base_balance:0},
+  // Payouts 2 and 4 are flip-only cycles (no nuke) - odd payouts_taken.
+  flip_cycle: {phase:'funded', days_traded:0, payouts_taken:1, winning_days_this_cycle:0,
+    nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false, base_balance:0},
   payout_ready: {payout_ready:true},
   passed: {phase:'passed', payout_ready:false},
   blown: {phase:'blown', payout_ready:false},
@@ -1169,6 +1490,7 @@ function fillAcctForm(acct){
   $('#f_notes').value = acct.notes || '';
   $('#f_enabled').checked = acct.enabled;
   $('#f_force_inactive').checked = acct.force_inactive;
+  $('#f_exclude_analytics').checked = !!acct.exclude_analytics;
   $('#f_signal_plan').value = acct.signal_plan || '';
   $('#f_equity').value = s.equity;
   $('#f_peak').value = s.peak_equity_eod;
@@ -1185,7 +1507,7 @@ async function loadAccountsPage(){
   ACCT_LIST = await (await jfetch('/api/accounts')).json();
   const pick = $('#acctPick');
   const prev = pick.value;
-  pick.innerHTML = '<option value="">— choose account —</option>';
+  pick.innerHTML = '<option value="">choose account</option>';
   for(const a of ACCT_LIST){
     const opt = document.createElement('option');
     opt.value = a.account_id;
@@ -1233,6 +1555,7 @@ $('#btnSaveAcct').onclick = async()=>{
     notes: $('#f_notes').value,
     enabled: $('#f_enabled').checked,
     force_inactive: $('#f_force_inactive').checked,
+    exclude_analytics: $('#f_exclude_analytics').checked,
     signal_plan: $('#f_signal_plan').value,
     equity: parseFloat($('#f_equity').value),
     peak_equity_eod: parseFloat($('#f_peak').value),
@@ -1264,20 +1587,26 @@ async function loadOps(){
 
 function renderOps(plan, mir){
   const nMap=plan.lines.filter(x=>x.action!=='BUY').length;
-  $('#opsSub').textContent=`${plan.date} · ${nMap} copier edit${nMap===1?'':'s'} · ${OPS_MIRRORS.length} mirror${OPS_MIRRORS.length===1?'':'s'}`;
+  $('#opsSub').textContent=`Daily copier orchestration · ${nMap} copier edit${nMap===1?'':'s'} · ${OPS_MIRRORS.length} mirror${OPS_MIRRORS.length===1?'':'s'}`;
   const applied=!!plan.applied_at;
   $('#opsApplied').classList.toggle('hidden',!applied);
-  $('#opsAppliedAt').textContent=applied?`applied ${plan.applied_at.replace(/:\d\d ET$/,' ET')}`:'';
+  $('#opsAppliedAt').textContent=applied?`applied ${etStampToLocal(plan.applied_at)}`:'';
+  // An applied plan re-solves to zero edit lines, so any lines that appear AFTER
+  // applying are NEW edits (mirror added, account toggled) - re-arm the button.
   const btn=$('#btnApplyPlan');
-  btn.disabled=applied;
-  btn.textContent=applied?'Applied for today':'Mark applied in Tradecopia';
+  btn.disabled=applied && !nMap;
+  btn.textContent=(applied && !nMap)?'Applied for today'
+    :applied?'Mark new edits applied':'Mark applied in Tradecopia';
 
-  // hazards strip
+  // hazards strip: per-mirror operator warnings from inferred state. The edge
+  // color and tag are the SEVERITY (danger/action/warning/info), not the firm.
+  const SEV_LABEL={danger:'risk',action:'action',warn:'warning',info:'info'};
   const hz=$('#opsHazards'); hz.innerHTML='';
   for(const h of (plan.hazards||[])){
     const d=document.createElement('div');
     d.className=`hazard ${h.severity}`;
-    d.innerHTML=`<span class="who">${esc(h.alias)}</span><span>${esc(h.text)}</span>`;
+    d.innerHTML=`<span class="who">${esc(h.alias)}</span><span>${esc(h.text)}</span>
+      <span class="sev">${SEV_LABEL[h.severity]||h.severity}</span>`;
     hz.appendChild(d);
   }
 
@@ -1286,7 +1615,7 @@ function renderOps(plan, mir){
   const lines=plan.lines.filter(x=>x.action!=='BUY');
   $('#opsPlanCount').textContent=lines.length?`${lines.length} line${lines.length===1?'':'s'}`:'';
   if(!lines.length){
-    host.innerHTML=`<div style="padding:22px" class="muted">No changes today — yesterday's mappings carry over.</div>`;
+    host.innerHTML=`<div style="padding:22px" class="muted">No changes today - yesterday's mappings carry over.</div>`;
   }
   for(const l of lines){
     const d=document.createElement('div');
@@ -1314,11 +1643,11 @@ function renderOps(plan, mir){
 
   // channels
   const ch=$('#opsChannels'); ch.innerHTML='';
-  $('#opsChanMeta').textContent=(plan.channels||[]).length?'':'';
+  const nChan=(plan.channels||[]).length;
+  $('#opsChanMeta').textContent=nChan?`${nChan} channel${nChan===1?'':'s'}`:'';
   if(!(plan.channels||[]).length){
-    ch.innerHTML=`<div style="padding:22px" class="muted">No signal channels configured.
-      Designate one on the <b>Accounts</b> page (Signal channel field) — e.g. the practice
-      account as <span class="mono">apex-nuke</span>.</div>`;
+    ch.innerHTML=`<div style="padding:22px" class="muted">No signal channels -
+      designate one on the <b>Accounts</b> page.</div>`;
   } else {
     const t=document.createElement('div');
     t.className='tablewrap';
@@ -1342,7 +1671,7 @@ function renderOps(plan, mir){
         <div class="what">${esc(p.alias)} · ${esc(p.firm)} ·
           <span class="mono">$${Number(p.amount).toLocaleString()}</span>
           <div class="why">request at the firm, then Mark Paid</div></div>
-        <button class="btn" style="padding:5px 12px;font-size:11.5px;margin-left:auto"
+        <button class="btn sm" style="margin-left:auto"
           onclick="mirrorPaid('${esc(p.mirror_id)}')">Mark Paid</button>`;
       pq.appendChild(d);
     }
@@ -1352,17 +1681,23 @@ function renderOps(plan, mir){
   const mh=$('#opsMirrors'); mh.innerHTML='';
   $('#opsMirrorMeta').textContent=OPS_MIRRORS.length?`${OPS_MIRRORS.length} total`:'';
   if(!OPS_MIRRORS.length){
-    mh.innerHTML=`<div style="padding:22px" class="muted">No mirror accounts yet.
-      Add follower-firm accounts on the <b>Accounts</b> page to start tracking them here.</div>`;
+    mh.innerHTML=`<div style="padding:22px" class="muted">No mirror accounts yet -
+      add them on the <b>Accounts</b> page.</div>`;
     return;
   }
   const byFirm={};
+  const names=plan.leader_names||{};
+  const nameOf=id=>id==null?null:(names[id]?esc(names[id]):`#${id}`);
   for(const m of OPS_MIRRORS) (byFirm[m.firm]=byFirm[m.firm]||[]).push(m);
   for(const firm of Object.keys(byFirm).sort()){
     const rows=byFirm[firm].map(m=>{
       const desired=(plan.desired||{})[m.mirror_id];
-      const lead=desired&&desired.leader_id!=null?`#${desired.leader_id}`
-        :(m.leader_id!=null?`#${m.leader_id}`:'—');
+      const dLid=desired?desired.leader_id:m.leader_id;
+      // Show the DESIRED leader by name; flag it "pending" until the plan is
+      // applied and the mapping is recorded on the mirror.
+      const pending=desired&&desired.leader_id!==m.leader_id;
+      const lead=(nameOf(dLid)||'-')
+        +(pending?' <span class="muted" title="apply the copier plan to record this">(pending)</span>':'');
       const chTag=m.firm==='apex-50k'&&(desired?desired.channel:m.channel)
         ?` <span class="muted">(${desired?desired.channel:m.channel})</span>`:'';
       const ver=m.last_verified||'never';
@@ -1386,7 +1721,7 @@ function renderOps(plan, mir){
         <span class="muted">${byFirm[firm].length}</span></div>
       <div class="tablewrap"><table style="min-width:760px"><thead><tr>
         <th>Mirror</th><th>Phase</th><th>Leader</th><th>Mult</th><th>Inferred P/L</th>
-        <th>Room</th><th>Days</th><th>Verified</th></tr></thead>
+        <th>Room</th><th>Win days</th><th>Verified</th></tr></thead>
         <tbody>${rows}</tbody></table></div>`;
     mh.appendChild(p);
   }
@@ -1436,13 +1771,13 @@ function renderMirrorTable(){
     if(['blown','retired'].includes(m.phase)) tr.classList.add('dim');
     const acts=[];
     if(m.phase==='passed')
-      acts.push(`<button class="btn" style="padding:5px 10px;font-size:11px"
+      acts.push(`<button class="btn sm"
         onclick="mirrorActivate('${esc(m.mirror_id)}')">Activate funded</button>`);
     if(m.phase==='waiting')
-      acts.push(`<button class="btn" style="padding:5px 10px;font-size:11px"
+      acts.push(`<button class="btn sm"
         onclick="mirrorPair('${esc(m.mirror_id)}')">Pair leader…</button>`);
     if(m.payout_ready)
-      acts.push(`<button class="btn" style="padding:5px 10px;font-size:11px"
+      acts.push(`<button class="btn sm"
         onclick="mirrorPaid('${esc(m.mirror_id)}')">Mark Paid</button>`);
     acts.push(`<button class="iconbtn" title="Sync balance from the firm dashboard"
       onclick="mirrorSync('${esc(m.mirror_id)}')">
@@ -1451,10 +1786,10 @@ function renderMirrorTable(){
       onclick="mirrorDelete('${esc(m.mirror_id)}')">${TRASH}</button>`);
     tr.innerHTML=`
       <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
-        <div class="muted mono">${esc(m.account_number||'—')}</div></td>
+        <div class="muted mono">${esc(m.account_number||'-')}</div></td>
       <td>${esc(FIRM_SHORT[m.firm]||m.firm)}</td>
       <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
-      <td class="mono">${m.leader_id!=null?'#'+m.leader_id:'—'}</td>
+      <td class="mono">${m.leader_name?esc(m.leader_name):(m.leader_id!=null?'#'+m.leader_id:'-')}</td>
       <td class="mono">${Number(m.multiplier).toFixed(2).replace(/\.?0+$/,'')}×</td>
       <td class="mono">${fmtUsd(m.equity)}</td>
       <td class="mono">${fmtUsd(m.room)}</td>
@@ -1482,7 +1817,9 @@ $('#btnAddMirror').onclick=async()=>{
 async function mirrorSync(mid){
   const m=MIRROR_LIST.find(x=>x.mirror_id===mid);
   const cur=m?Number(m.equity).toFixed(2):'0';
-  const v=prompt(`Profit/loss vs the account's starting balance (from the ${m?FIRM_SHORT[m.firm]:''} dashboard).\nInferred: $${cur}`, cur);
+  const v=await promptModal({title:'Sync mirror balance',
+    body:`Profit/loss vs the account's starting balance (from the ${m?FIRM_SHORT[m.firm]:''} dashboard).\nInferred: $${cur}`,
+    confirmText:'Sync', value:cur});
   if(v==null) return;
   const num=parseFloat(v);
   if(isNaN(num)){ toast('Enter a number'); return; }
@@ -1501,7 +1838,9 @@ async function mirrorActivate(mid){
   toast('Funded account activated'); loadMirrors();
 }
 async function mirrorPair(mid){
-  const v=prompt('Leader account id to pair with (a FRESH funded Express — see the Copier Plan):');
+  const v=await promptModal({title:'Pair leader',
+    body:'Leader account id to pair with (a FRESH funded Express - see the Copier Plan).',
+    confirmText:'Pair', placeholder:'account id'});
   if(v==null) return;
   const lid=parseInt(v,10);
   if(isNaN(lid)){ toast('Enter the numeric account id'); return; }
@@ -1519,6 +1858,423 @@ async function mirrorDelete(mid){
   toast('Mirror removed'); loadMirrors();
 }
 
+// ---- analytics page ----
+const LEG_PILL={eval:'eval',nuke:'nuke',renuke:'renuke',flip:'flip',
+  'sig-apex-nuke':'nuke','sig-apex-flip':'flip','sig-apex-eval':'eval'};
+// trade-log labels keep the internal sig- prefix; the UI shows the plain name
+const stripSig = s => String(s).replace(/^sig-/,'');
+const pct = (v,d=1) => (v==null?'-':(100*v).toFixed(d)+'%');
+const usdSigned = v => (v==null?'-':(v<0?'-$':'$')+Math.abs(v).toLocaleString('en-US',{maximumFractionDigits:0}));
+const pnlSpan = v => `<span class="${v>0?'delta-pos':v<0?'delta-neg':'muted'}">${usdSigned(v)}</span>`;
+
+async function loadAnalytics(){
+  try{
+    const a = await (await jfetch('/api/analytics')).json();
+    renderAnalytics(a);
+  }catch(e){ $('#anaSub').textContent='could not load analytics'; }
+}
+
+function niceStep(raw){
+  const mag=Math.pow(10,Math.floor(Math.log10(Math.max(raw,1e-9))));
+  for(const m of [1,2,2.5,5,10]) if(m*mag>=raw) return m*mag;
+  return 10*mag;
+}
+
+// static two-series SVG line chart - no libraries, themed via CSS variables
+function profitChartSvg(pts){
+  if(!pts || pts.length<2)
+    return `<div style="padding:26px 10px" class="muted">Not enough history yet.</div>`;
+  const W=900,H=260,PL=68,PR=18,PT=14,PB=30;
+  const vals=pts.flatMap(p=>[p.realized_cum,p.banked_cum]);
+  let lo=Math.min(0,...vals), hi=Math.max(0,...vals);
+  if(hi===lo) hi=lo+1;
+  const step=niceStep((hi-lo)/4);
+  lo=Math.floor(lo/step)*step; hi=Math.ceil(hi/step)*step;
+  const X=i=>PL+(W-PL-PR)*i/(pts.length-1);
+  const Y=v=>PT+(H-PT-PB)*(1-(v-lo)/(hi-lo));
+  let g='';
+  for(let v=lo;v<=hi+1e-9;v+=step){
+    const y=Y(v), zero=Math.abs(v)<1e-9;
+    g+=`<line x1="${PL}" x2="${W-PR}" y1="${y}" y2="${y}"
+      stroke="rgba(235,180,140,${zero?'.22':'.07'})" stroke-width="1"/>
+      <text x="${PL-9}" y="${y+3.5}" text-anchor="end">${usdSigned(v)}</text>`;
+  }
+  const xticks=[0,Math.floor((pts.length-1)/2),pts.length-1];
+  for(const i of new Set(xticks))
+    g+=`<text x="${X(i)}" y="${H-9}" text-anchor="${i===0?'start':i===pts.length-1?'end':'middle'}">${pts[i].date}</text>`;
+  const line=(key,color)=>{
+    const d=pts.map((p,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(p[key]).toFixed(1)}`).join('');
+    const last=pts[pts.length-1];
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"
+        stroke-linejoin="round" stroke-linecap="round"/>
+      <circle cx="${X(pts.length-1)}" cy="${Y(last[key])}" r="3.5" fill="${color}"/>`;
+  };
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img"
+      aria-label="Cumulative profit over time">${g}
+    ${line('realized_cum','var(--flip)')}${line('banked_cum','var(--accent)')}</svg>`;
+}
+
+function renderAnalytics(a){
+  const t=a.totals||{};
+  $('#anaSub').textContent=`Live results & spend · ${a.trades_recorded} trade${a.trades_recorded===1?'':'s'} recorded live`;
+  const net=$('#anaNet');
+  net.innerHTML=usdSigned(t.net_cash_est);
+  net.style.color=t.net_cash_est>0?'var(--long)':t.net_cash_est<0?'var(--short)':'';
+  $('#anaBanked').textContent=usdSigned(t.payouts_banked);
+  $('#anaSpend').textContent=usdSigned(t.spend_est);
+  const f=a.funnel||{};
+  $('#anaPass').innerHTML=f.pass_rate==null
+    ?`<span class="muted">-</span>`
+    :`${pct(f.pass_rate)} <span class="muted" style="font-size:13px">model ${pct(f.model_pass)}</span>`;
+
+  $('#anaChart').innerHTML=profitChartSvg(a.curve);
+
+  // win-rate table: legs with live trades first, model-only legs greyed below
+  const legs=(a.legs||[]);
+  const traded=legs.filter(l=>l.n>0), idle=legs.filter(l=>!l.n);
+  $('#anaLegsMeta').textContent=traded.length?'':'no live trades yet - showing the backtested model';
+  $('#anaLegs').innerHTML=[...traded,...idle].map(l=>{
+    const cls=LEG_PILL[l.label]||'idle';
+    const ci=l.ci95!=null?` <span class="muted">±${(100*l.ci95).toFixed(0)}</span>`:'';
+    const delta=(l.live_wr!=null&&l.model_drive!=null)?l.live_wr-l.model_drive:null;
+    return `<tr class="${l.n?'':'dim'}">
+      <td><span class="pill ${cls}">${esc(stripSig(l.label))}</span></td>
+      <td class="mono">${l.n}</td>
+      <td class="mono" style="white-space:nowrap">${l.wins} / ${l.losses} / ${l.flats}</td>
+      <td class="mono" style="white-space:nowrap">${l.live_wr==null?'<span class="muted">-</span>':pct(l.live_wr)+ci}</td>
+      <td class="mono muted">${pct(l.model_drive)}</td>
+      <td class="mono muted">${pct(l.model_coin)}</td>
+      <td class="mono">${delta==null?'<span class="muted">-</span>'
+        :`<span class="${delta>=0?'delta-pos':'delta-neg'}">${delta>=0?'+':''}${(100*delta).toFixed(1)}pp</span>`}</td>
+      <td class="mono">${l.n?pnlSpan(l.pnl):'<span class="muted">-</span>'}</td></tr>`;
+  }).join('');
+
+  // eval funnel + fleet equity
+  const fl=a.fleet||{}, line=(lbl,val)=>`<div class="statline"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`;
+  $('#anaFunnelMeta').textContent=f.started?`${f.started} evals bought`:'';
+  $('#anaFunnel').innerHTML=
+    line('Evals in progress', f.active??0)
+    +line('Passed → funded', `${f.passed??0}`)
+    +line('Blown evals', f.blown??0)
+    +line('Live pass rate', f.pass_rate==null
+        ?'-':`${pct(f.pass_rate)}<span class="vs">model ${pct(f.model_pass)}</span>`)
+    +line('Funded active', f.funded_active??0)
+    +line('Funded blown / retired', `${f.funded_blown??0} / ${f.retired??0}`)
+    +line('Funded balances', usdSigned(fl.funded_equity))
+    +line('Mirror balances (inferred)', usdSigned(fl.mirror_equity));
+
+  // spend breakdown
+  const rows=(a.spend_breakdown||[]);
+  $('#anaSpendRows').innerHTML=rows.length
+    ?rows.map(r=>line(`${esc(r.what)} <span class="muted">×${r.count} @ $${r.unit}</span>`,
+        usdSigned(r.cost))).join('')
+      +line('<b>Total</b>', `<b>${usdSigned(t.spend_est)}</b>`)
+    :`<div style="padding:22px" class="muted">No accounts registered yet.</div>`;
+
+  // recent payouts
+  const pays=(a.recent_payouts||[]);
+  $('#anaPayouts').innerHTML=pays.length
+    ?pays.map(p=>line(`${p.date} · ${esc(p.who)} <span class="muted">${p.source}${p.estimated?' · est.':''}</span>`,
+        usdSigned(p.amount))).join('')
+    :`<div style="padding:22px" class="muted">No payouts recorded yet.</div>`;
+
+  // recent trades
+  const rec=(a.recent||[]);
+  $('#anaRecentMeta').textContent=rec.length?`last ${rec.length}`:'';
+  $('#anaRecent').innerHTML=rec.length
+    ?rec.map(r=>`<tr>
+        <td class="mono muted">${esc(r.date)}</td>
+        <td><div class="name">${esc(r.account)}</div>${r.owner?`<div class="muted mono">${esc(r.owner)}</div>`:''}</td>
+        <td><span class="pill ${LEG_PILL[r.label]||'idle'}">${esc(stripSig(r.label))}</span></td>
+        <td><span class="pill ${{win:'win',loss:'loss'}[r.outcome]||'flat'}">${esc(r.outcome)}</span></td>
+        <td class="mono">${pnlSpan(r.pnl)}</td>
+        <td class="mono">${r.balance==null?'-':fmtUsd(r.balance)}</td></tr>`).join('')
+    :`<tr><td colspan="6" class="muted" style="text-align:center">No trades recorded yet.</td></tr>`;
+}
+
+// ---- simulation page ----
+let SIM_META=null, SIM_TPL_ID='';
+const SIM_TZ = localTzAbbr()||'local';
+// [key, label, type, options?, hint?] - selects use [value, text] pairs;
+// groups are [title, fields, panelHint?]
+const SIM_SCHEMA=[
+  ['Setup',[
+    ['lifecycle','Lifecycle','select',[['full','Full lifecycle (eval to funded)'],
+      ['eval','Eval only'],['funded','Funded only'],['single','Single bracket daily']]],
+    ['direction_rule','Direction rule','select',
+      [['drive',`Drive momentum (${etToLocalHHMM('09:30')}-${etToLocalHHMM('09:45')} ${SIM_TZ} open move)`],
+      ['long','Always long'],['short','Always short'],['coin','Coin flip (edge fully faded)']]],
+    ['firm','Firm preset','select',[['','custom (no prefill)']]],
+    ['entry_time',`Entry time (${SIM_TZ})`,'input'],
+    ['date_from','Data from (optional, YYYY-MM-DD)','input'],
+    ['date_to','Data to (optional, YYYY-MM-DD)','input'],
+    ['tie_rule','Same-bar ties','select',[['pessimistic','Pessimistic - stop wins'],
+      ['optimistic','Optimistic - target wins']]]]],
+  ['Account & costs',[
+    ['initial_balance','Starting balance ($)','input'],
+    ['funded_start','Funded starting balance ($)','input'],
+    ['dll','Daily loss limit ($)','input'],
+    ['trailing','Trailing max loss ($)','input'],
+    ['point_value','Point value ($/pt)','input'],
+    ['ticket_cost','Ticket cost ($)','input'],
+    ['activation_cost','Activation cost ($)','input']]],
+  ['Eval leg',[
+    ['eval_contracts','Contracts (minis)','input'],
+    ['eval_target_pts','Target (pts)','input'],
+    ['eval_stop_pts','Stop (pts)','input'],
+    ['eval_target_dollars','Profit target ($)','input'],
+    ['eval_min_days','Min days','input']]],
+  ['Funded legs',[
+    ['funded_contracts','Nuke contracts (minis)','input'],
+    ['nuke_target_dollars','Nuke target ($)','input'],
+    ['flip_contracts','Flip contracts (minis)','input'],
+    ['flip_target_dollars','Flip target ($)','input'],
+    ['winning_days_required','Winning days / payout','input'],
+    ['payout_cap','Payout cap ($)','input'],
+    ['payouts_target','Payouts then retire','input']]],
+  ['Single bracket',[
+    ['single_contracts','Contracts (minis)','input'],
+    ['single_target_pts','Target (pts)','input'],
+    ['single_stop_pts','Stop (pts)','input']]],
+  ['Run',[
+    ['n_paths','Simulated accounts (paths)','input'],
+    ['seed','Random seed','input'],
+    ['sampling','Day sampling','select',[['bootstrap','Random historical days (bootstrap)'],
+      ['sequential','Real day order (random start)']]],
+    ['max_days','Max trading days per account','input'],
+    ['tickets','Tickets to buy (fleet size)','input']]],
+];
+const SIM_STR_KEYS=['lifecycle','direction_rule','entry_time','date_from','date_to',
+  'tie_rule','sampling','firm'];
+
+function initSimForm(){
+  const host=$('#simForm'); host.innerHTML='';
+  for(const [title,fields,panelHint] of SIM_SCHEMA){
+    const p=document.createElement('div'); p.className='panel';
+    let body=panelHint?`<div class="hint" style="margin:0 0 14px">${esc(panelHint)}</div>`:'';
+    for(const [key,label,type,opts,hint] of fields){
+      if(type==='select'){
+        const options=(key==='firm'
+          ? [['','custom (no prefill)'],
+             ...Object.entries(SIM_META.firms).map(([k,f])=>[k,f.label])]
+          : opts).map(([v,t])=>`<option value="${esc(v)}">${esc(t)}</option>`).join('');
+        body+=`<div class="field"><label>${esc(label)}</label>
+          <select class="acct-pick" style="max-width:none" data-key="${key}">${options}</select></div>`;
+      } else {
+        body+=`<div class="field"><label>${esc(label)}</label><input data-key="${key}"></div>`;
+      }
+      if(hint) body+=`<div class="hint" style="margin:-8px 0 14px">${esc(hint)}</div>`;
+    }
+    p.innerHTML=`<div class="head"><h2>${esc(title)}</h2></div>
+      <div style="padding:18px 22px">${body}</div>`;
+    host.appendChild(p);
+  }
+  fillSimForm(SIM_META.defaults);
+  // firm preset prefills that firm's accounting rules (still editable)
+  host.querySelector('[data-key=firm]').onchange=e=>{
+    const f=SIM_META.firms[e.target.value];
+    if(!f) return;
+    const set=(k,v)=>{ const el=host.querySelector(`[data-key=${k}]`); if(el) el.value=v; };
+    set('ticket_cost',f.ticket_cost); set('activation_cost',f.activation_cost);
+    set('dll',f.dll==null?1000:f.dll); set('trailing',f.trailing);
+    set('eval_target_dollars',f.eval_target); set('eval_min_days',f.eval_min_days);
+    set('payout_cap',f.payout_cap); set('winning_days_required',f.winning_days_required);
+    toast(`Prefilled ${f.label} rules`);
+  };
+}
+function fillSimForm(params){
+  for(const el of document.querySelectorAll('#simForm [data-key]')){
+    const k=el.dataset.key;
+    if(k==='firm') continue;
+    if(!(k in params)) continue;
+    el.value = k==='entry_time' ? etToLocalHHMM(params[k]) : params[k];
+  }
+}
+function collectSimParams(){
+  const p={};
+  for(const el of document.querySelectorAll('#simForm [data-key]')){
+    const k=el.dataset.key;
+    if(k==='firm') continue;
+    let v=String(el.value).trim();
+    if(k==='entry_time') v=localToEtHHMM(v);
+    else if(!SIM_STR_KEYS.includes(k)) v=parseFloat(v)||0;
+    p[k]=v;
+  }
+  return p;
+}
+
+async function loadSim(){
+  if(!SIM_META){
+    try{ SIM_META=await (await jfetch('/api/sim/meta')).json(); }
+    catch(e){ $('#simSub').textContent='could not load simulation metadata'; return; }
+    initSimForm();
+  }
+  const cov=SIM_META.coverage||{};
+  $('#simSub').textContent = cov.available
+    ? `Backtest & Monte Carlo · ${cov.days} days of NQ tick data · ${cov.date_from} to ${cov.date_to}`
+    : 'Backtest & Monte Carlo · no tick data yet - import NinjaTrader tick data, then run export_sim_ticks.py';
+  $('#btnSimRun').disabled=!cov.available;
+  loadSimTemplates();
+}
+
+async function runSim(){
+  const btn=$('#btnSimRun');
+  btn.disabled=true; btn.textContent='Running…';
+  try{
+    const r=await jfetch('/api/sim/run',{method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({params:collectSimParams(), template_id:SIM_TPL_ID})});
+    const data=await r.json();
+    if(!r.ok){ toast(data.error||'Simulation failed'); return; }
+    renderSimResult(data);
+    if(SIM_TPL_ID) loadSimTemplates();   // stored-run summary just updated
+  } finally {
+    btn.disabled=false; btn.textContent='Run simulation';
+  }
+}
+$('#btnSimRun').onclick=runSim;
+
+// fan chart: p10-p90 and p25-p75 bands + median line, same axes style as Analytics
+function simFanSvg(c){
+  const days=c.days||[], n=days.length;
+  if(n<2) return '<div style="padding:26px 10px" class="muted">No curve data.</div>';
+  const W=900,H=280,PL=68,PR=18,PT=14,PB=30;
+  let lo=Math.min(0,...c.p10), hi=Math.max(0,...c.p90);
+  if(hi===lo) hi=lo+1;
+  const step=niceStep((hi-lo)/4);
+  lo=Math.floor(lo/step)*step; hi=Math.ceil(hi/step)*step;
+  const X=i=>PL+(W-PL-PR)*i/(n-1);
+  const Y=v=>PT+(H-PT-PB)*(1-(v-lo)/(hi-lo));
+  let g='';
+  for(let v=lo;v<=hi+1e-9;v+=step){
+    const y=Y(v), zero=Math.abs(v)<1e-9;
+    g+=`<line x1="${PL}" x2="${W-PR}" y1="${y}" y2="${y}"
+      stroke="rgba(235,180,140,${zero?'.22':'.07'})" stroke-width="1"/>
+      <text x="${PL-9}" y="${y+3.5}" text-anchor="end">${usdSigned(v)}</text>`;
+  }
+  for(const i of new Set([0,Math.floor((n-1)/2),n-1]))
+    g+=`<text x="${X(i)}" y="${H-9}" text-anchor="${i===0?'start':i===n-1?'end':'middle'}">day ${days[i]}</text>`;
+  const path=a=>a.map((v,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+  const band=(aTop,aBot,op)=>{
+    const back=aBot.map((v,j)=>`L${X(aBot.length-1-j).toFixed(1)},${Y(aBot[aBot.length-1-j]).toFixed(1)}`).join('');
+    return `<path d="${path(aTop)}${back}Z" fill="var(--accent)" opacity="${op}" stroke="none"/>`;
+  };
+  return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img"
+      aria-label="Simulated net cash percentile bands over days">${g}
+    ${band(c.p90,c.p10,.12)}${band(c.p75,c.p25,.22)}
+    <path d="${path(c.p50)}" fill="none" stroke="var(--accent)" stroke-width="2"
+      stroke-linejoin="round" stroke-linecap="round"/></svg>`;
+}
+
+function renderSimResult(r){
+  $('#simResults').classList.remove('hidden');
+  $('#simSuccessLabel').textContent=r.success.label;
+  $('#simSuccess').textContent=pct(r.success.prob);
+  const nm=$('#simNetMedian');
+  nm.textContent=usdSigned(r.net.median);
+  nm.style.color=r.net.median>0?'var(--long)':r.net.median<0?'var(--short)':'';
+  $('#simBlow').textContent=pct(r.probs.blown);
+  $('#simDays').textContent=r.days_to_outcome.median;
+  $('#simChart').innerHTML=simFanSvg(r.curve);
+
+  const line=(lbl,val)=>`<div class="statline"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`;
+  let dist=line('Typical ticket (median)', usdSigned(r.net.median))
+    +line('Average ticket (mean)', usdSigned(r.net.mean))
+    +line('Unlucky ticket (worst 5%)', usdSigned(r.net.p5))
+    +line('Lucky ticket (best 5%)', usdSigned(r.net.p95))
+    +line('Average payouts banked', usdSigned(r.net.mean_banked))
+    +line('Average cost per ticket', usdSigned(r.net.mean_costs))
+    +line('Tickets ending profitable', pct(r.probs.profitable))
+    +line('Passed eval / blown', `${pct(r.probs.eval_passed)} / ${pct(r.probs.blown)}`)
+    +line('Reached a payout / retired', `${pct(r.probs.paid_once)} / ${pct(r.probs.retired)}`);
+  if(r.fleet) dist+=line(`<b>Buying ${r.fleet.tickets} tickets - typical total</b>`,
+      `<b>${usdSigned(r.fleet.p50)}</b>`)
+    +line(`${r.fleet.tickets} tickets - unlucky / lucky (5%)`,
+      `${usdSigned(r.fleet.p5)} / ${usdSigned(r.fleet.p95)}`);
+  $('#simDist').innerHTML=dist;
+
+  $('#simLegsMeta').textContent=`over ${r.days_used} historical days`;
+  $('#simLegs').innerHTML=r.legs.map(l=>`<tr>
+    <td><span class="pill ${LEG_PILL[l.label]||'idle'}">${esc(l.label)}</span></td>
+    <td class="mono" style="white-space:nowrap">${l.target_pts} / ${l.stop_pts}</td>
+    <td class="mono">${l.n}</td>
+    <td class="mono">${l.wr==null?'-':pct(l.wr)}</td>
+    <td class="mono muted">${pct(l.coin_floor)}</td>
+    <td class="mono muted">${l.model_drive==null?'-':pct(l.model_drive)}</td></tr>`).join('');
+
+  $('#simInfo').innerHTML=
+    line('Data window', `${r.date_from} to ${r.date_to}`)
+    +line('Days in pool', r.days_used)
+    +line('Paths x seed', `${r.params.n_paths} x ${r.params.seed}`)
+    +line('Sampling / ties', `${r.params.sampling} / ${r.params.tie_rule}`)
+    +line('Elapsed', `${r.elapsed_ms} ms`);
+}
+
+// ---- templates ----
+async function loadSimTemplates(){
+  let list=[];
+  try{ list=(await (await jfetch('/api/sim/templates')).json()).templates||[]; }
+  catch(e){ return; }
+  $('#simTplMeta').textContent=list.length?`${list.length} saved`:'';
+  const host=$('#simTplList'); host.innerHTML='';
+  if(!list.length){
+    host.innerHTML=`<div style="padding:22px" class="muted">No templates saved yet.</div>`;
+    return;
+  }
+  for(const t of list){
+    const s=t.summary;
+    const sum=s&&s.success?`${esc(s.success.label)} ${pct(s.success.prob)} · median ${usdSigned(s.net_median)}`
+      :'never run';
+    const d=document.createElement('div');
+    d.className='planline';
+    d.innerHTML=`<div class="what"><span class="name">${esc(t.name)}</span>
+        ${SIM_TPL_ID===t.id?'<span class="muted"> (loaded)</span>':''}
+        <div class="why">${sum}</div></div>
+      <span class="cell-actions" style="margin-left:auto">
+        <button class="btn sm js-load">Load</button>
+        <button class="btn sm js-run">Run</button>
+        <button class="iconbtn danger js-del" title="Delete template">${TRASH}</button>
+      </span>`;
+    d.querySelector('.js-load').onclick=()=>loadSimTemplate(t);
+    d.querySelector('.js-run').onclick=async()=>{ await loadSimTemplate(t, {quiet:true}); runSim(); };
+    d.querySelector('.js-del').onclick=()=>deleteSimTemplate(t);
+    host.appendChild(d);
+  }
+}
+async function loadSimTemplate(t, {quiet=false}={}){
+  fillSimForm(t.params||{});
+  SIM_TPL_ID=t.id;
+  loadSimTemplates();          // refresh the "(loaded)" marker
+  if(quiet) return;
+  try{
+    const r=await jfetch(`/api/sim/templates/${encodeURIComponent(t.id)}/result`);
+    if(r.ok){ renderSimResult(await r.json()); toast(`Loaded "${t.name}" with stored results`); return; }
+  }catch(e){}
+  toast(`Loaded "${t.name}"`);
+}
+async function deleteSimTemplate(t){
+  const ok=await confirmModal({title:'Delete template?',
+    body:`Remove "${t.name}" and its stored run results?`,
+    confirmText:'Delete', danger:true});
+  if(!ok) return;
+  await jfetch(`/api/sim/templates/${encodeURIComponent(t.id)}`,{method:'DELETE'});
+  if(SIM_TPL_ID===t.id) SIM_TPL_ID='';
+  toast('Template deleted'); loadSimTemplates();
+}
+$('#btnSimSaveTpl').onclick=async()=>{
+  const name=await promptModal({title:'Save template',
+    body:'Name this parameter set. Saving again with the same name updates it.',
+    confirmText:'Save', placeholder:'e.g. apex nuke, coin flip floor'});
+  if(name==null || !name.trim()) return;
+  const r=await jfetch('/api/sim/templates',{method:'POST',
+    headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name:name.trim(), params:collectSimParams()})});
+  const t=await r.json();
+  if(!r.ok){ toast(t.error||'Could not save'); return; }
+  SIM_TPL_ID=t.id;
+  toast(`Template "${t.name}" saved`); loadSimTemplates();
+};
+
 // live updates
 function connectWS(){
   try{
@@ -1530,8 +2286,10 @@ function connectWS(){
 }
 refresh(); connectWS(); setInterval(pollAuto, 15000);
 // keep Operations live while it's the visible page (plan + inferred states move
-// as reconciles land); cheap — two cached API reads
+// as reconciles land); cheap - two cached API reads
 setInterval(()=>{ if(CUR_PAGE==='ops') loadOps(); }, 20000);
+// Analytics refreshes on the same cadence while visible (one cheap file read)
+setInterval(()=>{ if(CUR_PAGE==='analytics') loadAnalytics(); }, 20000);
 </script>
 </body>
 </html>

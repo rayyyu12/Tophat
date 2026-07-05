@@ -43,11 +43,11 @@ def lifecycle_label(cfg: AccountConfig, state: AccountState, *, can_trade: bool 
     if state.phase == Phase.RETIRED:
         return "retired"
     if state.phase == Phase.PASSED:
-        return "eval passed — funded incoming"
+        return "eval passed - funded incoming"
     if state.phase == Phase.BLOWN:
         return "blown"
     if not can_trade:
-        return "inactive — can't trade"
+        return "inactive - can't trade"
     if state.phase == Phase.EVAL:
         return f"eval day {state.days_traded + 1}"
     if is_nuke_cycle(state.payouts_taken) and not state.nuke_hit_this_cycle:

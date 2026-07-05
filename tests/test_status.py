@@ -27,4 +27,4 @@ def test_sync_phase_from_name_skips_terminal():
 def test_lifecycle_label_inactive_eval():
     cfg = AccountConfig()
     st = AccountState(phase=Phase.EVAL, days_traded=0)
-    assert lifecycle_label(cfg, st, can_trade=False) == "inactive — can't trade"
+    assert lifecycle_label(cfg, st, can_trade=False) == "inactive - can't trade"

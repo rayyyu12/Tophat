@@ -10,10 +10,10 @@ _test_signalr.py
 # The app re-creates data/ on startup (see tophat/store/paths.py) — nothing here
 # belongs in the repo. NOTE: data/.secret (session-signing key) and data/tophat.db
 # (users + password hashes) were previously committed; they are now untracked.
-data/
+
 
 # Local research / backtest scripts + datasets — kept locally, not shipped.
-research/
+
 
 # Root-level dev shim scripts (thin redirects into research.* / tophat.*).
 # tophat.py is the real entry point.

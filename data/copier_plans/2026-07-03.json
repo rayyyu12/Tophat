@@ -1,0 +1,60 @@
+{
+  "date": "2026-07-03",
+  "lines": [
+    {
+      "action": "BUY",
+      "mirror_id": "",
+      "detail": "Topstep: buy 10 eval(s) (~$850)",
+      "reason": "pipeline 0/10"
+    },
+    {
+      "action": "BUY",
+      "mirror_id": "",
+      "detail": "Lucid: buy 7 eval(s) (~$686)",
+      "reason": "evals 0/7 (cap 10 total, 0 funded)"
+    },
+    {
+      "action": "BUY",
+      "mirror_id": "",
+      "detail": "Tradeify: buy 10 eval(s) (~$990)",
+      "reason": "pipeline 0/10"
+    },
+    {
+      "action": "BUY",
+      "mirror_id": "",
+      "detail": "Apex: buy 10 eval(s) (~$390)",
+      "reason": "new cohort (0 PAs, cap 20) - payout-funded gate: buy only from banked payouts"
+    }
+  ],
+  "desired": {},
+  "channels": [],
+  "buys": [
+    {
+      "firm": "Topstep",
+      "count": 10,
+      "cost": 850.0,
+      "reason": "pipeline 0/10"
+    },
+    {
+      "firm": "Lucid",
+      "count": 7,
+      "cost": 686.0,
+      "reason": "evals 0/7 (cap 10 total, 0 funded)"
+    },
+    {
+      "firm": "Tradeify",
+      "count": 10,
+      "cost": 990.0,
+      "reason": "pipeline 0/10"
+    },
+    {
+      "firm": "Apex",
+      "count": 10,
+      "cost": 390.0,
+      "reason": "new cohort (0 PAs, cap 20) - payout-funded gate: buy only from banked payouts"
+    }
+  ],
+  "payout_queue": [],
+  "hazards": [],
+  "applied_at": "2026-07-03 17:05:42 ET"
+}

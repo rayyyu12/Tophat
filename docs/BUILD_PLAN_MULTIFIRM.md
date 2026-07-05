@@ -33,7 +33,7 @@ class FirmProfile:
     key: str                      # "topstep-50k" | "lucid-50k" | "tradeify-50k" | "apex-50k"
     label: str
     ticket_cost: float
-    activation_cost: float        # 149 topstep XFA / 0 lucid,tradeify / 139 apex
+    activation_cost: float        # 0 topstep ($85 all-in) / 0 lucid,tradeify / 139 apex
     dll: float | None             # None = no DLL (tradeify)
     trailing: float               # 2_000 everywhere (today)
     eval_target: float            # 3_000
