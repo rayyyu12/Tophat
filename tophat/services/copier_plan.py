@@ -30,6 +30,36 @@ from tophat.store.paths import COPIER_PLANS_DIR
 APEX_INTAKE_PER_DAY = 2
 APEX_NUKE_SLOTS = 1
 
+# Eval-finisher sizing (operator-approved 2026-07-06; STATS_AUDIT addendum).
+# The leader's eval win day is 15.5pt x 5 minis = $1,550 gross; one follower
+# mini nets ~$303 after ~$7 RT commission. When a scaled clone eval (Tradeify
+# 0.8x) can FINISH with fewer minis, cut the multiplier to just cover
+# max(target, best_day/consistency) + margin: the win probability is the
+# leader's bracket either way, but a red finish day loses less, leaving more
+# retries above the trailing floor (+3.4pp pass, +$62/ticket measured).
+# Mini granularity only — an MNQ cross-copy finisher loses its edge to micro
+# commissions (measured: below even the no-finisher baseline).
+LEADER_EVAL_DAY_GROSS = 1_550.0
+LEADER_EVAL_CONTRACTS = 5
+FINISHER_MINI_NET = LEADER_EVAL_DAY_GROSS / LEADER_EVAL_CONTRACTS - 7.0
+FINISHER_MARGIN = 60.0
+
+
+def _eval_scale(firm, m: MirrorAccount) -> float:
+    """Copier multiplier for a clone-firm eval mirror: the firm's standard
+    scale until the account is close enough to finish smaller."""
+    base = firm.copier_scale_eval
+    if base >= 1.0 or m.days_traded == 0 or m.equity <= 0:
+        return base            # pure clones (Lucid) and fresh evals: as-is
+    bar = firm.eval_target
+    if firm.eval_consistency:
+        bar = max(bar, m.eval_best_day / firm.eval_consistency)
+    remaining = bar + FINISHER_MARGIN - m.equity
+    if remaining >= base * LEADER_EVAL_DAY_GROSS:
+        return base            # still needs a full day - no finisher yet
+    minis = max(1, -(-int(remaining) // int(FINISHER_MINI_NET)))  # ceil
+    return min(base, minis / LEADER_EVAL_CONTRACTS)
+
 
 @dataclass
 class Leader:
@@ -205,7 +235,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
 
         # ---- clone firms (lucid / tradeify) ----
         if m.phase == "eval":
-            want_mult = firm.copier_scale_eval
+            want_mult = _eval_scale(firm, m)
             lid = m.leader_id
             leader = lmap.get(lid) if lid is not None else None
             if leader is None or not leader.live_eval:
@@ -230,9 +260,12 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
             else:
                 plan.desired[mid] = Desired(lid, "", want_mult)
             if abs(m.multiplier - want_mult) > 1e-9:
+                why = (f"{firm.label} eval finisher - a smaller last day still "
+                       "passes and cuts the loss if it goes red"
+                       if want_mult < firm.copier_scale_eval - 1e-9
+                       else f"{firm.label} eval copier scale")
                 plan.lines.append(PlanLine(
-                    "SET_MULT", mid, f"{label}: multiplier -> {want_mult:g}x",
-                    f"{firm.label} eval copier scale"))
+                    "SET_MULT", mid, f"{label}: multiplier -> {want_mult:g}x", why))
         else:  # funded clone — pairing is for life; only flag a dead leader
             leader = lmap.get(m.leader_id) if m.leader_id is not None else None
             if leader is not None and leader.live_funded:
@@ -309,7 +342,7 @@ def _desire_apex(plan: CopierPlan, m: MirrorAccount, label: str, lmap,
                 if m.leader_id != ch.account_id:
                     plan.lines.append(PlanLine(
                         "MAP", m.mirror_id, f"{label}: follow {ch.name} (flip channel)",
-                        "flip mode - daily $325 flips"))
+                        "flip mode - daily $285 flips"))
             else:
                 plan.desired[m.mirror_id] = Desired(None, "flip", 1.0)
         else:
@@ -364,7 +397,8 @@ def _buy_list(leaders: list[Leader], mirrors: dict[str, MirrorAccount]) -> list[
 
 # ------------------------------------------------------------ persistence
 def _plan_path(date: str, base: Path | None = None) -> Path:
-    d = base or COPIER_PLANS_DIR
+    from tophat.store import tenant
+    d = base or tenant.resolve(COPIER_PLANS_DIR)
     return d / f"{date}.json"
 
 
@@ -383,7 +417,8 @@ def plan_to_dict(plan: CopierPlan) -> dict:
 
 
 def save_plan(plan: CopierPlan, base: Path | None = None) -> None:
-    d = base or COPIER_PLANS_DIR
+    from tophat.store import tenant
+    d = base or tenant.resolve(COPIER_PLANS_DIR)
     d.mkdir(parents=True, exist_ok=True)
     atomic_write_text(_plan_path(plan.date, d), json.dumps(plan_to_dict(plan), indent=2))
 

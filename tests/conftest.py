@@ -46,6 +46,21 @@ def clean_state():
     yield
 
 
+@pytest.fixture(autouse=True)
+def tenant_ctx():
+    """Run every test as tenant uid=1 — the id conftest's `client` fixture user
+    gets — so direct store calls in test code and API calls through the login
+    cookie read/write the SAME per-user files (tophat/store/tenant.py)."""
+    from tophat.store import tenant
+    token = tenant.set_user(1)
+    yield
+    tenant.set_user(None)
+    try:
+        tenant._CURRENT_UID.reset(token)
+    except ValueError:
+        pass
+
+
 class ControllableMock(MockBroker):
     """One account whose balance and flat-status the test drives directly."""
 

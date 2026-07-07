@@ -4,11 +4,13 @@ import pytest
 
 from tophat.store.firms import APEX, FIRMS, FOLLOWER_FIRMS, LUCID, TOPSTEP, TRADEIFY, get_firm
 
-# The strategy's commission/slippage buffers (research/compare_firms.py conventions):
-# 1-mini legs book ~$20 under gross, 2-mini legs ~$50.
+# Commission/slippage conventions: realistic NQ round trip ~$7/mini; the old
+# research figure of ~$20/mini is kept as the conservative bound
+# (docs/STATS_AUDIT_2026-07-06.md §5/§7).
 FLIP_GROSS_CLONE = 170.0     # topstep/lucid/tradeify flip target
-FLIP_GROSS_APEX = 325.0      # apex-native flip target
-ONE_MINI_COST = 20.0
+FLIP_GROSS_APEX = 285.0      # apex-native flip target (14.25pt, re-locked 2026-07-06)
+ONE_MINI_COST = 7.0
+ONE_MINI_COST_CONSERVATIVE = 20.0
 
 
 def test_registry_complete_and_keyed():
@@ -32,15 +34,18 @@ def test_stop_is_half_trailing_everywhere():
 
 
 def test_clone_flip_qualifies_at_clone_firms():
-    # $170 gross flip nets ~$150 — must meet the $150 win-day bar exactly
-    net = FLIP_GROSS_CLONE - ONE_MINI_COST
+    # $170 gross flip must meet the $150 win-day bar even at the conservative
+    # commission bound (it lands exactly on it — the locked calibration)
     for p in (TOPSTEP, LUCID, TRADEIFY):
-        assert net >= p.win_day_min
+        assert FLIP_GROSS_CLONE - ONE_MINI_COST > p.win_day_min
+        assert FLIP_GROSS_CLONE - ONE_MINI_COST_CONSERVATIVE >= p.win_day_min
 
 
 def test_apex_flip_qualifies_but_250_gross_does_not():
-    net_locked = FLIP_GROSS_APEX - ONE_MINI_COST
-    assert net_locked >= APEX.win_day_min + 50  # >= $50 slippage buffer
+    # $285 flip: >= $25 buffer (5 ticks) at realistic commissions, and still
+    # above the bar even at the conservative $20 bound
+    assert FLIP_GROSS_APEX - ONE_MINI_COST >= APEX.win_day_min + 25
+    assert FLIP_GROSS_APEX - ONE_MINI_COST_CONSERVATIVE >= APEX.win_day_min
     # the landmine the sims found: a $250-gross flip nets under the bar
     assert 250.0 - ONE_MINI_COST < APEX.win_day_min
 

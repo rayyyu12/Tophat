@@ -17,6 +17,11 @@ Two input paths:
 2. NT8 text export (--txt DIR):  Tools > Historical Data > Export (Text),
    tick granularity. One file per contract named like "NQ 06-26.Last.txt",
    lines "yyyyMMdd HHmmss[ fffffff];last[;bid;ask];volume".
+   TIMEZONE: text exports are UTC (verified 2026-07-06 against the original
+   research cache data/cache/nq_rth_1s.parquet and research/data_loader.py:
+   export-range boundaries land at midnight CT = 05:00/06:00 UTC across DST,
+   and the RTH volume peak sits at 13:30-16:00 UTC). The .ncd db, by
+   contrast, stores machine-local CT. Each path converts to ET itself.
 
 Usage:
     python research/reconstruction/export_sim_ticks.py
@@ -113,8 +118,16 @@ def decode_tick_file(path: str) -> list[tuple[int, float, int]]:
     return out
 
 
-def validate_ticks(df: pd.DataFrame, source: str) -> None:
-    """Hard sanity gate for decoded ticks - refuse to build a wrong cache."""
+def validate_ticks(df: pd.DataFrame, source: str, *,
+                   peak_hours: range = range(8, 16)) -> None:
+    """Hard sanity gate for decoded ticks - refuse to build a wrong cache.
+
+    `peak_hours` is where the RTH volume burst must land in the SOURCE
+    timezone: 08:30-15:00 for machine-local-CT .ncd data (default),
+    13:30-20:00 for UTC text exports. Passing the wrong range is what let the
+    original +1h-CT assumption slip through on UTC data - the 13:30 UTC open
+    burst overlaps the 8..15 CT window.
+    """
     problems = []
     if len(df) < 1000:
         problems.append(f"only {len(df)} ticks")
@@ -124,11 +137,11 @@ def validate_ticks(df: pd.DataFrame, source: str) -> None:
     lo, hi = float(df["price"].min()), float(df["price"].max())
     if med <= 0 or lo < 0.5 * med or hi > 2.0 * med:
         problems.append(f"price range implausible ({lo} .. {hi}, median {med})")
-    # RTH (13:30-20:00 UTC-ish; ticks are machine-local CT, so 08:30-15:00)
     by_hour = df.groupby(df["ts"].dt.hour)["volume"].sum()
-    if not by_hour.empty and by_hour.idxmax() not in range(8, 16):
-        problems.append(f"volume peaks at hour {by_hour.idxmax()} CT - "
-                        "timestamps look wrong")
+    if not by_hour.empty and by_hour.idxmax() not in peak_hours:
+        problems.append(f"volume peaks at hour {by_hour.idxmax()} "
+                        f"(expected {peak_hours.start}..{peak_hours.stop - 1} "
+                        "in the source tz) - timestamps look wrong")
     if problems:
         raise SystemExit(
             f"TICK DECODE VALIDATION FAILED for {source}:\n  - "
@@ -144,8 +157,10 @@ def load_ncd_contract(code: str) -> pd.DataFrame:
         rows.extend(decode_tick_file(path))
     df = pd.DataFrame(rows, columns=["us", "price", "volume"])
     df["ts"] = pd.to_datetime(df["us"], unit="us")
-    df = df.drop(columns=["us"]).sort_values("ts").reset_index(drop=True)
-    validate_ticks(df, f"{code} (.ncd)")
+    df = df.drop(columns=["us"]).sort_values("ts", kind="stable").reset_index(drop=True)
+    validate_ticks(df, f"{code} (.ncd)")   # .ncd db is machine-local CT
+    # CT -> ET is a constant +1h (identical DST rules)
+    df["ts"] = df["ts"] + pd.Timedelta(hours=1)
     df["contract"] = code
     return df
 
@@ -154,7 +169,11 @@ _TXT_LINE = re.compile(r"^(\d{8}) (\d{6})(?: (\d+))?;([0-9.]+)(?:;[0-9.]*)*;(\d+
 
 
 def load_txt_contract(path: str) -> pd.DataFrame:
-    """Parse one NT8 tick text export: yyyyMMdd HHmmss[ frac];last[;bid;ask];vol."""
+    """Parse one NT8 tick text export: yyyyMMdd HHmmss[ frac];last[;bid;ask];vol.
+
+    Text exports are UTC (see module docstring); validated in UTC, then
+    converted DST-aware to ET so downstream never sees the source tz.
+    """
     ts, px, vol = [], [], []
     with open(path, encoding="utf-8") as f:
         for ln in f:
@@ -166,9 +185,11 @@ def load_txt_contract(path: str) -> pd.DataFrame:
             vol.append(int(m.group(5)))
     df = pd.DataFrame({
         "ts": pd.to_datetime(ts, format="%Y%m%d %H%M%S"),
-        "price": px, "volume": vol}).sort_values("ts").reset_index(drop=True)
+        "price": px, "volume": vol}).sort_values("ts", kind="stable").reset_index(drop=True)
     code = Path(path).name.split(".")[0]
-    validate_ticks(df, f"{code} (txt)")
+    validate_ticks(df, f"{code} (txt)", peak_hours=range(13, 20))  # UTC source
+    df["ts"] = (df["ts"].dt.tz_localize("UTC")
+                .dt.tz_convert("America/New_York").dt.tz_localize(None))
     df["contract"] = code
     return df
 
@@ -184,9 +205,8 @@ def ticks_to_1s(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_cache(frames: list[pd.DataFrame]) -> pd.DataFrame:
+    # loaders hand over ET wall-clock timestamps (each converts its own source tz)
     bars = pd.concat([ticks_to_1s(f) for f in frames], ignore_index=True)
-    # NT timestamps are machine-local CT; CT+1h = ET (identical DST rules)
-    bars["ts"] = bars["ts"] + pd.Timedelta(hours=1)
     bars["date"] = bars["ts"].dt.strftime("%Y-%m-%d")
     bars["time"] = bars["ts"].dt.strftime("%H:%M:%S")
     bars = bars[(bars["time"] >= "09:30:00") & (bars["time"] <= "16:00:00")]
@@ -195,7 +215,7 @@ def build_cache(frames: list[pd.DataFrame]) -> pd.DataFrame:
     pick = vol.loc[vol.groupby("date")["volume"].idxmax()] \
         .set_index("date")["contract"]
     bars = bars[bars["contract"] == bars["date"].map(pick)]
-    return bars.sort_values(["date", "time"])[
+    return bars.sort_values(["date", "time"], kind="stable")[
         ["date", "time", "open", "high", "low", "close"]].reset_index(drop=True)
 
 

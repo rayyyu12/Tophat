@@ -7,6 +7,25 @@
 > (built on `research/backtest_common.py`, same 251-day 1s RTH drive cache as everything else).
 > Baseline strategy & probability context: `docs/STRATEGY.md`, `docs/PROBABILITY.md`.
 
+> **AMENDMENTS 2026-07-06** (re-audit on the real 285-day tick cache with
+> net-of-commission booking — `docs/STATS_AUDIT_2026-07-06.md`; operator-approved):
+> 1. **Apex eval signal bracket 30 → 31.5pt.** 30pt × 5 = $3,000 GROSS nets ~$2,960,
+>    so the 1-day pass this policy was built on was arithmetically impossible after
+>    commissions (real pass 31%, not 46.6%). At 31.5pt: pass 43.3%, +$261/ticket.
+> 2. **Apex flip $325 → $285 (14.25pt).** +$70/ticket EV; ~5.6 ticks above the $250
+>    NET win-day bar at realistic ($7/mini RT) commissions (operator accepts the
+>    slippage margin). The "$350 WR cliff" cited below is actually a smooth decline;
+>    the binding considerations are net margin and cycle length.
+> 3. **Apex retires at 6 payouts** (was: never retired on payout count) — +33%/ticket.
+> 4. **Tradeify eval finisher:** when a 0.8× eval can finish with fewer minis, the
+>    solver cuts the multiplier to just cover max($3,000, best/0.40)+$60 (mini
+>    granularity; same leader bracket ⇒ same win odds, smaller red day). +3.4pp pass,
+>    +$62/ticket. An MNQ cross-copy finisher was evaluated and REJECTED (micro
+>    commissions eat the entire benefit).
+> 5. The "~$20/mini RT" commission figure below is a conservative bound; realistic
+>    NQ all-in is ~$7–9. Sim numbers in §3 were computed GROSS on 251 days; the
+>    STATS_AUDIT tables supersede them for planning.
+
 ---
 
 ## 0. Immediate action items (before anything else)

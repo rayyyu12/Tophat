@@ -17,7 +17,7 @@ accounts, and orchestrates copying it to firms that have no API.
 - Funded accounts run payout cycles of 5 winning days each:
   - Cycles 1 and 3: nuke first (the nuke win is the cycle's first winning day), then flips.
   - Cycles 2 and 4: flips only.
-- Each payout = min($2,000, half the balance). After 4 payouts the account retires.
+- Each payout = min($2,000, half the balance). After 4 payouts the account retires (Apex mirrors run to 6 payouts — operator rule 2026-07-06; other firms 4).
 - **Trailing max loss (MLL)**: $2,000 below peak, locking at the starting balance once earned. Balance at or below the floor = dead. TopHat marks such accounts inactive automatically.
 - Within $1,000 of the floor, orders go out with no protective stop - Topstep's auto-liquidation is the stop.
 
@@ -35,6 +35,13 @@ accounts, and orchestrates copying it to firms that have no API.
 - Flips stagger across entry times so the fleet does not enter at once.
 - Entries have a 10-minute grace window; later than that, the day is skipped.
 - Hedge guard skips any account that is not flat at fire time.
+
+## Multiple users
+
+- Every login is fully independent: your API keys, accounts, mirrors, settings,
+  and analytics are yours alone — no other user can see or affect them.
+- Accounts are created by the operator on the server console:
+  `python -m tophat.server.auth adduser you@x.com '<password>'`.
 
 ## Time zones
 

@@ -1,5 +1,17 @@
 # Reconstruction & stress analysis (2026-07-04)
 
+> **2026-07-06 update (real tick data restored):** `sim_ticks_rth_1s.parquet`
+> is now built from the operator's real NQ tick text exports (`data/NQ *.txt`)
+> and validated bar-for-bar against the original research cache
+> (`data/cache/nq_rth_1s.parquet`): all 5.51M overlapping 1s bars align, OHLC
+> identical on 99.9998% (13 single-bar within-second tie diffs). Coverage
+> 2025-06-23 .. 2026-06-30 (285 days) — it recovers 4 roll-Friday gaps the old
+> expiry-based roll dropped and adds 9 days past 06-17. NOTE: the txt exports
+> are **UTC**, not machine-local CT — `export_sim_ticks.py`'s --txt path was
+> fixed accordingly (the .ncd path stays CT). The minute-bar day outcomes below
+> keep their documented ~2-4pp tie bias and are superseded for forward use by
+> the Simulation page running on the tick-derived cache.
+
 The original `research/` scripts and `data/cache/nq_rth_1s.parquet` no longer
 exist on this machine. This folder rebuilds the backtest independently from the
 NinjaTrader 8 minute `.ncd` database (`Documents/NinjaTrader 8/db/minute`,

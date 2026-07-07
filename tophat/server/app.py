@@ -18,12 +18,14 @@ from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
+import threading
+
 from tophat.server import auth, service
 from tophat.services import mirror_sync
 from tophat.services.automation import Automation
 from tophat.store import credentials as creds_store
 from tophat.store import mirrors as mirrors_store
-from tophat.store import single_instance
+from tophat.store import single_instance, tenant
 from tophat.store.config import load_settings, update_settings
 from tophat.store.firms import FIRMS, FOLLOWER_FIRMS
 
@@ -45,9 +47,32 @@ async def lifespan(app: FastAPI):
     # however the app is launched (python tophat.py OR uvicorn ...app:app).
     app.state.instance_lock = single_instance.acquire_or_none()
     auth.seed_admin_from_env()
-    creds_store.seed_credentials_from_env()
-    app.state.brokers = service.build_broker_pool()
-    app.state.automation = Automation(lambda: app.state.brokers)
+    # Multi-tenant stores (store/tenant.py): every user's state lives under
+    # data/users/<uid>/. One-time move of pre-tenant global files into the
+    # first (operator) user's dir, then seed env credentials there.
+    operator_uid = tenant.local_operator_uid()
+    moved = tenant.migrate_legacy_to(operator_uid)
+    if moved:
+        import logging
+        logging.getLogger("tophat.tenant").info(
+            "migrated legacy data files into users/%s: %s", operator_uid, moved)
+    with tenant.as_user(operator_uid):
+        creds_store.seed_credentials_from_env()
+    # Broker pools are built lazily per user (a pool needs that user's keys).
+    app.state.pools = {}
+    app.state.pools_lock = threading.Lock()
+
+    def pool_for(uid: int):
+        with app.state.pools_lock:
+            pool = app.state.pools.get(uid)
+            if pool is None:
+                with tenant.as_user(uid):
+                    pool = service.build_broker_pool()
+                app.state.pools[uid] = pool
+        return pool
+
+    app.state.pool_for = pool_for
+    app.state.automation = Automation(pool_for)
     app.state.automation.start()
     try:
         yield
@@ -62,15 +87,24 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(title="TopHat", docs_url=None, redoc_url=None, lifespan=lifespan)
 
+    def current_pool():
+        """The logged-in user's broker pool (middleware set the tenant)."""
+        uid = tenant.get_user()
+        return app.state.pool_for(uid)
+
     def rebuild_pool():
-        """Re-read credentials and rebuild the broker pool (after a key change)."""
-        for h in getattr(app.state, "brokers", []):
+        """Re-read the CURRENT user's credentials and rebuild their broker pool
+        (after a key change). Other users' pools are untouched."""
+        uid = tenant.get_user()
+        with app.state.pools_lock:
+            old = app.state.pools.pop(uid, [])
+        for h in old:
             try:
                 if h.broker is not None and hasattr(h.broker, "close"):
                     h.broker.close()
             except Exception:
                 pass
-        app.state.brokers = service.build_broker_pool()
+        app.state.pool_for(uid)
         service.invalidate_broker_cache()
 
     @app.middleware("http")
@@ -78,10 +112,15 @@ def create_app() -> FastAPI:
         path = request.url.path
         if path in PUBLIC_PATHS or path.startswith("/assets"):
             return await call_next(request)
-        if auth.verify_cookie(request.cookies.get(auth.COOKIE_NAME)) is None:
+        uid = auth.verify_cookie(request.cookies.get(auth.COOKIE_NAME))
+        if uid is None:
             if path.startswith("/api") or path == "/ws":
                 return JSONResponse({"error": "unauthorized"}, status_code=401)
             return RedirectResponse("/login")
+        # Bind the request to its user: every store read/write below resolves
+        # into data/users/<uid>/ (store/tenant.py). call_next's downstream task
+        # inherits a copy of this context; sync endpoints get it in the threadpool.
+        tenant.set_user(uid)
         return await call_next(request)
 
     # --- auth ---
@@ -108,7 +147,7 @@ def create_app() -> FastAPI:
     # --- data / actions ---
     @app.get("/api/state")
     def get_state():
-        return service.build_dashboard(app.state.brokers)
+        return service.build_dashboard(current_pool())
 
     @app.get("/api/automation")
     def automation_status():
@@ -118,11 +157,11 @@ def create_app() -> FastAPI:
 
     @app.get("/api/accounts")
     def list_accounts():
-        return service.list_accounts_detail(app.state.brokers)
+        return service.list_accounts_detail(current_pool())
 
     @app.post("/api/accounts/{account_id}/lifecycle")
     def patch_lifecycle(account_id: int, body: dict):
-        return service.update_account_lifecycle(account_id, body, app.state.brokers)
+        return service.update_account_lifecycle(account_id, body, current_pool())
 
     # --- ProjectX API keys (encrypted at rest; one per username) ---
     @app.get("/api/credentials")
@@ -193,7 +232,7 @@ def create_app() -> FastAPI:
         from zoneinfo import ZoneInfo
         ms = mirrors_store.load_mirrors()
         today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
-        names = service.account_names(app.state.brokers)
+        names = service.account_names(current_pool())
         return {"mirrors": [{**mirror_sync.public_view(m),
                              "leader_name": names.get(m.leader_id, "")}
                             for m in ms.values()],
@@ -269,7 +308,7 @@ def create_app() -> FastAPI:
     @app.get("/api/copier-plan")
     def get_copier_plan():
         from tophat.services import copier_plan as cp
-        plan = cp.build_today_plan(app.state.brokers, _today_et())
+        plan = cp.build_today_plan(current_pool(), _today_et())
         return cp.plan_to_dict(plan)
 
     @app.post("/api/copier-plan/apply")
@@ -278,7 +317,7 @@ def create_app() -> FastAPI:
         from zoneinfo import ZoneInfo
         from tophat.services import copier_plan as cp
         now = datetime.now(ZoneInfo("America/New_York"))
-        plan = cp.build_today_plan(app.state.brokers, now.strftime("%Y-%m-%d"))
+        plan = cp.build_today_plan(current_pool(), now.strftime("%Y-%m-%d"))
         cp.apply_plan(plan, applied_at=now.strftime("%Y-%m-%d %H:%M:%S ET"))
         service.invalidate_snapshot_cache()
         return cp.plan_to_dict(plan)
@@ -298,7 +337,7 @@ def create_app() -> FastAPI:
     @app.get("/api/analytics")
     def get_analytics():
         from tophat.server import analytics
-        return analytics.build_analytics(app.state.brokers)
+        return analytics.build_analytics(current_pool())
 
     # --- simulation: backtest + Monte Carlo over the cached NQ minute bars ---
     @app.get("/api/sim/meta")
@@ -386,20 +425,25 @@ def create_app() -> FastAPI:
         # Manual Execute from the dashboard is an explicit, confirmed operator
         # action — it fires regardless of the auto-execute (automation) switch.
         manual = bool(body.get("manual", False))
-        return service.run_all_sessions(app.state.brokers, execute=execute, manual=manual)
+        return service.run_all_sessions(current_pool(), execute=execute, manual=manual)
 
     @app.websocket("/ws")
     async def ws(socket: WebSocket):
-        if auth.verify_cookie(socket.cookies.get(auth.COOKIE_NAME)) is None:
+        uid = auth.verify_cookie(socket.cookies.get(auth.COOKIE_NAME))
+        if uid is None:
             await socket.close(code=1008)
             return
+        # The HTTP auth middleware doesn't run for WebSockets — bind the tenant
+        # here so every store read in the push loop is scoped to this user
+        # (asyncio.to_thread carries the context into the worker thread).
+        tenant.set_user(uid)
         await socket.accept()
         try:
             while True:
                 # In a worker thread: a cache-miss build does REST round-trips, and
                 # blocking the event loop here would delay the automation loop's
                 # precisely timed 09:45:00 wake-up.
-                snap = await asyncio.to_thread(service.build_dashboard, app.state.brokers)
+                snap = await asyncio.to_thread(service.build_dashboard, current_pool())
                 await socket.send_json(snap)
                 await asyncio.sleep(WS_INTERVAL)
         except (WebSocketDisconnect, Exception):

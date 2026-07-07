@@ -147,6 +147,10 @@ def run_cmd(
 
 def cli_entry() -> None:
     load_dotenv()
+    # Local single-operator tool: act as the operator user so store reads hit
+    # the same data/users/<uid>/ slice the dashboard uses (TOPHAT_USER_ID to override).
+    from tophat.store import tenant
+    tenant.set_user(tenant.local_operator_uid())
     app()
 
 

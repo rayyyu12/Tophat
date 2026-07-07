@@ -168,6 +168,45 @@ def test_practice_account_fires_on_explicit_manual_execute():
     assert fired == {prac_id}
 
 
+def test_manual_practice_fire_holds_no_eval_slot():
+    # A manual validation fire must not consume a capped eval slot or write
+    # schedule rotation state - the real eval fires alongside it, not behind it.
+    from tophat.services.scheduler import load_schedule
+    _arm(max_evals_per_day=1)
+    b = MockBroker(n_eval=2, n_funded=0, seed=4)
+    prac_id = b._accounts[0].account_id
+    real_id = b._accounts[1].account_id
+    b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-1", 150_000.0, True, True)
+    out = service.run_all_sessions([BrokerHandle("o", b, "mock")],
+                                   execute=True, manual=True)
+    fired = {r["account_id"] for r in out["results"] if r.get("order_id")}
+    assert fired == {prac_id, real_id}
+    prac_row = [r for r in out["results"] if r["account_id"] == prac_id][0]
+    assert prac_row["action"] == "practice"
+    sched = load_schedule()
+    assert prac_id not in sched.last_eval_date       # never held the slot
+    assert sched.last_eval_date.get(real_id)         # the real eval did
+
+
+def test_manual_practice_fire_stays_out_of_the_trade_log():
+    # Practice validation outcomes are fake money - they must not reconcile
+    # into the Analytics trade log.
+    from tophat.store import trade_log
+    _arm(max_evals_per_day=1)
+    b = MockBroker(n_eval=1, n_funded=0, seed=8)
+    prac_id = b._accounts[0].account_id
+    b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-9", 150_000.0, True, True)
+    pool = [BrokerHandle("o", b, "mock")]
+    out = service.run_all_sessions(pool, execute=True, manual=True)
+    assert out["orders_placed"] == 1
+    # win the bracket, flatten, reconcile on the next day's manual pass
+    b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-9", 151_550.0, True, True)
+    b._positions[prac_id] = []
+    day2 = datetime(2026, 7, 2, 9, 46, tzinfo=ET)
+    service.run_all_sessions(pool, execute=True, manual=True, now_et=day2)
+    assert not [e for e in trade_log.read_events() if e.get("type") == "trade"]
+
+
 # --- concurrent-writer safety ----------------------------------------------------
 
 def test_merge_save_preserves_another_writers_fire():

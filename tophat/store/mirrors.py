@@ -19,6 +19,7 @@ import time
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
+from tophat.store import tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.firms import FOLLOWER_FIRMS, get_firm
 from tophat.store.paths import MIRRORS_FILE
@@ -85,7 +86,8 @@ def _from_dict(d: dict) -> MirrorAccount:
 _IO_LOCK = threading.Lock()
 
 
-def load_mirrors(path: Path = MIRRORS_FILE) -> dict[str, MirrorAccount]:
+def load_mirrors(path: Path | None = None) -> dict[str, MirrorAccount]:
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -97,15 +99,17 @@ def _write(mirrors: dict[str, MirrorAccount], path: Path) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2))
 
 
-def save_mirrors(mirrors: dict[str, MirrorAccount], path: Path = MIRRORS_FILE) -> None:
+def save_mirrors(mirrors: dict[str, MirrorAccount], path: Path | None = None) -> None:
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     with _IO_LOCK:
         _write(mirrors, path)
 
 
 def merge_save_mirrors(mirrors: dict[str, MirrorAccount], ids,
-                       path: Path = MIRRORS_FILE) -> None:
+                       path: Path | None = None) -> None:
     """Persist ONLY `ids`, merged over on-disk contents (same contract as
     states.merge_save — concurrent writers can't clobber each other's entries)."""
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     with _IO_LOCK:
         disk = load_mirrors(path)
         for i in ids:
@@ -114,7 +118,8 @@ def merge_save_mirrors(mirrors: dict[str, MirrorAccount], ids,
         _write(disk, path)
 
 
-def delete_mirror(mirror_id: str, path: Path = MIRRORS_FILE) -> bool:
+def delete_mirror(mirror_id: str, path: Path | None = None) -> bool:
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     with _IO_LOCK:
         disk = load_mirrors(path)
         if mirror_id not in disk:
@@ -136,9 +141,10 @@ def next_mirror_id(firm_key: str, mirrors: dict[str, MirrorAccount]) -> str:
 
 def create_mirror(firm_key: str, *, account_number: str = "", alias: str = "",
                   leader_id: int | None = None, multiplier: float | None = None,
-                  phase: str = "eval", path: Path = MIRRORS_FILE) -> MirrorAccount:
+                  phase: str = "eval", path: Path | None = None) -> MirrorAccount:
     """Register a follower account. Defaults to a fresh eval at the firm's standard
     copier scale. Raises ValueError on unknown firms / bad phase."""
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     if firm_key not in FOLLOWER_FIRMS:
         raise ValueError(f"unknown follower firm {firm_key!r} "
                          f"(known: {sorted(FOLLOWER_FIRMS)})")
@@ -160,9 +166,10 @@ def create_mirror(firm_key: str, *, account_number: str = "", alias: str = "",
         return m
 
 
-def with_mirror(mirror_id: str, fn, path: Path = MIRRORS_FILE) -> MirrorAccount | None:
+def with_mirror(mirror_id: str, fn, path: Path | None = None) -> MirrorAccount | None:
     """Load -> apply `fn(mirror)` -> persist, all under the store lock. Returns the
     updated mirror, or None if unknown. `fn` may raise ValueError for bad states."""
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     with _IO_LOCK:
         disk = load_mirrors(path)
         m = disk.get(mirror_id)
@@ -181,9 +188,10 @@ _PATCHABLE = {
 
 
 def patch_mirror(mirror_id: str, patch: dict, *, today: str = "",
-                 path: Path = MIRRORS_FILE) -> MirrorAccount | None:
+                 path: Path | None = None) -> MirrorAccount | None:
     """Apply a partial operator edit. `sync_balance` in the patch sets equity to the
     firm-dashboard profit figure and stamps last_verified=today."""
+    path = tenant.resolve(MIRRORS_FILE) if path is None else path
     with _IO_LOCK:
         disk = load_mirrors(path)
         m = disk.get(mirror_id)

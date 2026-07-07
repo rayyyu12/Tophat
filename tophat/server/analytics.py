@@ -35,8 +35,10 @@ MODEL_WR = {
     "renuke":        (0.192, 0.236),
     "flip":          (0.855, 0.884),
     "sig-apex-nuke": (0.435, 0.488),
-    "sig-apex-flip": (0.755, 0.815),
-    "sig-apex-eval": (0.250, 0.302),
+    # 14.25/50 flip + 31.5/10 eval, measured on the 285-day tick cache
+    # (brackets re-locked 2026-07-06; docs/STATS_AUDIT_2026-07-06.md)
+    "sig-apex-flip": (0.794, 0.844),
+    "sig-apex-eval": (0.222, 0.295),
 }
 MODEL_EVAL_PASS = 0.424   # corrected intraday-MLL model (PROBABILITY.md §0)
 

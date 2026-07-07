@@ -7,7 +7,7 @@ from dataclasses import dataclass, field, replace
 from tophat.broker.projectx.broker import ProjectXBroker
 from tophat.engine import (
     AccountConfig, AccountState, Action, Phase, decide, should_omit_stop, start_new_day)
-from tophat.services.status import infer_phase_from_name, lifecycle_label
+from tophat.services.status import infer_phase_from_name, is_practice, lifecycle_label
 from tophat.store.registry import AccountRegistry
 from tophat.store.states import get_or_create, load_all, save_all
 
@@ -70,7 +70,10 @@ def run_session(
     summary = RunSummary(drive=drive, drive_source=drive_source, nq_contract=nq)
 
     for acct in accounts:
-        if not acct.can_trade:
+        # Practice accounts report canTrade=true but must never fire from the
+        # legacy runner (no signal/manual-validation concept here — see
+        # server.service.run_session for those paths).
+        if not acct.can_trade or is_practice(acct.name):
             continue
         if account_filter and acct.account_id not in account_filter:
             continue

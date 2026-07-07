@@ -48,8 +48,10 @@ def _entry_times(settings) -> list[tuple[int, int]]:
 
 class Automation:
     def __init__(self, pool_provider, interval: float = 30.0) -> None:
-        # `pool_provider` returns the current broker pool, so adding/removing an
-        # API key in Settings is picked up on the next tick without a restart.
+        # `pool_provider(uid)` returns that user's current broker pool, so adding/
+        # removing an API key in Settings is picked up on the next tick without a
+        # restart. Every login user with auto_execute armed gets their own tick —
+        # users run concurrently (independent files/brokers; see service._run_lock).
         self.pool_provider = pool_provider
         self.interval = interval
         self._task: asyncio.Task | None = None
@@ -88,30 +90,63 @@ class Automation:
                 best = delta
         return best
 
-    async def _loop(self) -> None:
+    async def _tick_user(self, uid: int, now: datetime) -> dict:
+        """One user's automation tick, in that user's tenant context.
+
+        Runs as its own asyncio task, so the ContextVar set here is task-local
+        and asyncio.to_thread carries it into the session runner's thread."""
         from tophat.server import service
+        from tophat.store import tenant
         from tophat.store.config import load_settings
+        tenant.set_user(uid)
+        out: dict = {"uid": uid, "fired": False, "result": None, "next_delay": None}
+        settings = load_settings()
+        if settings.auto_execute and self._in_window(now, settings):
+            log.info("automation tick — firing uid=%s sessions at %s ET",  # [debuglog]
+                     uid, now.strftime("%H:%M:%S"))
+            res = await asyncio.to_thread(
+                service.run_all_sessions, self.pool_provider(uid),
+                execute=True, respect_times=True, now_et=now)
+            out["fired"], out["result"] = True, res
+            log.info("automation tick done — uid=%s placed=%s reconciled=%s",  # [debuglog]
+                     uid, res.get("orders_placed"), len(res.get("reconciled", [])))
+        out["next_delay"] = self._next_entry_delay(datetime.now(ET), settings)
+        return out
+
+    async def _loop(self) -> None:
+        from tophat.server import auth
         while not self._stop.is_set():
             timeout = self.interval
             try:
-                settings = load_settings()
                 now = datetime.now(ET)
-                if settings.auto_execute and self._in_window(now, settings):
-                    log.info("automation tick — firing sessions at %s ET",  # [debuglog]
-                             now.strftime("%H:%M:%S"))
-                    res = await asyncio.to_thread(
-                        service.run_all_sessions, self.pool_provider(),
-                        execute=True, respect_times=True, now_et=now)
+                users = auth.list_users()
+                ticks = await asyncio.gather(
+                    *(self._tick_user(int(u["id"]), now) for u in users),
+                    return_exceptions=True)
+                fired = [t for t in ticks if isinstance(t, dict) and t["fired"]]
+                errors = [t for t in ticks if isinstance(t, Exception)]
+                if fired:
                     self.last_tick = now.strftime("%Y-%m-%d %H:%M:%S ET")
-                    self.last_result = res
+                    self.last_result = {
+                        "orders_placed": sum(t["result"].get("orders_placed", 0)
+                                             for t in fired),
+                        "reconciled": [r for t in fired
+                                       for r in t["result"].get("reconciled", [])],
+                        "users": {t["uid"]: t["result"] for t in fired},
+                    }
+                if errors:
+                    self.last_error = str(errors[0])
+                    for e in errors:
+                        log.error("automation user tick failed: %s", e)
+                elif fired:
                     self.last_error = None
-                    log.info("automation tick done — placed=%s reconciled=%s",  # [debuglog]
-                             res.get("orders_placed"), len(res.get("reconciled", [])))
-                # Align the next wake-up to the next entry time when it lands inside
-                # this sleep, so the tick fires AT 09:45:00 (+~50ms), not up to an
-                # interval later. (+0.05s lands just past the minute boundary so the
-                # HH:MM due-time comparison passes.)
-                delay = self._next_entry_delay(datetime.now(ET), settings)
+                # Align the next wake-up to the soonest entry time across all users
+                # when it lands inside this sleep, so ticks fire AT 09:45:00 (+~50ms),
+                # not up to an interval later. (+0.05s lands just past the minute
+                # boundary so the HH:MM due-time comparison passes.)
+                delays = [t["next_delay"] for t in ticks
+                          if isinstance(t, dict) and t["next_delay"] is not None]
+                delay = min(delays) if delays else None
                 if delay is not None and 0 < delay < timeout:
                     timeout = delay + 0.05
             except Exception as exc:           # never let the loop die

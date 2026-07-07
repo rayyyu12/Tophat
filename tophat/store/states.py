@@ -7,6 +7,7 @@ import threading
 from pathlib import Path
 
 from tophat.engine import AccountState, Phase
+from tophat.store import tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import STATES_FILE
 
@@ -66,7 +67,8 @@ def _dict_to_state(d: dict) -> AccountState:
 _IO_LOCK = threading.Lock()
 
 
-def load_all(path: Path = STATES_FILE) -> dict[int, AccountState]:
+def load_all(path: Path | None = None) -> dict[int, AccountState]:
+    path = tenant.resolve(STATES_FILE) if path is None else path
     if not path.exists():
         return {}
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -78,17 +80,19 @@ def _write(states: dict[int, AccountState], path: Path) -> None:
     atomic_write_text(path, json.dumps(payload, indent=2))
 
 
-def save_all(states: dict[int, AccountState], path: Path = STATES_FILE) -> None:
+def save_all(states: dict[int, AccountState], path: Path | None = None) -> None:
+    path = tenant.resolve(STATES_FILE) if path is None else path
     with _IO_LOCK:
         _write(states, path)
 
 
 def merge_save(states: dict[int, AccountState], ids,
-               path: Path = STATES_FILE) -> None:
+               path: Path | None = None) -> None:
     """Persist ONLY `ids`, merged over the current on-disk contents.
 
     Use this from any writer that changed a subset of accounts, so it can't
     overwrite entries another writer updated since this writer's load()."""
+    path = tenant.resolve(STATES_FILE) if path is None else path
     with _IO_LOCK:
         disk = load_all(path)
         for i in ids:

@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from tophat.engine import TERMINAL, AccountState, Phase, is_nuke_cycle
+from tophat.store import tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.config import TopHatSettings
 from tophat.store.paths import SCHEDULE_FILE
@@ -34,7 +35,8 @@ class ScheduleState:
     last_run_date: str = ""
 
 
-def load_schedule(path: Path = SCHEDULE_FILE) -> ScheduleState:
+def load_schedule(path: Path | None = None) -> ScheduleState:
+    path = tenant.resolve(SCHEDULE_FILE) if path is None else path
     if not path.exists():
         return ScheduleState()
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -45,7 +47,8 @@ def load_schedule(path: Path = SCHEDULE_FILE) -> ScheduleState:
     )
 
 
-def save_schedule(s: ScheduleState, path: Path = SCHEDULE_FILE) -> None:
+def save_schedule(s: ScheduleState, path: Path | None = None) -> None:
+    path = tenant.resolve(SCHEDULE_FILE) if path is None else path
     payload = {
         "last_nuke_date": {str(k): v for k, v in s.last_nuke_date.items()},
         "last_eval_date": {str(k): v for k, v in s.last_eval_date.items()},

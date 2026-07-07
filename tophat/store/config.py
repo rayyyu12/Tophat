@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
 
 from tophat.engine import AccountConfig
+from tophat.store import tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import SETTINGS_FILE
 
@@ -57,7 +58,8 @@ class TopHatSettings:
         return AccountConfig(**{k: v for k, v in asdict(self).items() if k in valid})
 
 
-def load_settings(path: Path = SETTINGS_FILE) -> TopHatSettings:
+def load_settings(path: Path | None = None) -> TopHatSettings:
+    path = tenant.resolve(SETTINGS_FILE) if path is None else path
     if not path.exists():
         return TopHatSettings()
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -65,7 +67,8 @@ def load_settings(path: Path = SETTINGS_FILE) -> TopHatSettings:
     return TopHatSettings(**{k: v for k, v in raw.items() if k in known})
 
 
-def save_settings(s: TopHatSettings, path: Path = SETTINGS_FILE) -> None:
+def save_settings(s: TopHatSettings, path: Path | None = None) -> None:
+    path = tenant.resolve(SETTINGS_FILE) if path is None else path
     atomic_write_text(path, json.dumps(asdict(s), indent=2))
 
 
@@ -82,8 +85,9 @@ def _norm_hhmm(t: str) -> str:
     return f"{h:02d}:{m:02d}"
 
 
-def update_settings(patch: dict, path: Path = SETTINGS_FILE) -> TopHatSettings:
+def update_settings(patch: dict, path: Path | None = None) -> TopHatSettings:
     """Apply a partial update from the dashboard, validate, persist, return the result."""
+    path = tenant.resolve(SETTINGS_FILE) if path is None else path
     s = load_settings(path)
     known = {f.name for f in fields(TopHatSettings)}
     for k, v in patch.items():

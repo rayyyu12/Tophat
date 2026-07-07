@@ -19,7 +19,8 @@ def test_trade_log_roundtrip_and_torn_line():
     trade_log.log_event("payout", account_id=1, amount=2000.0, source="leader",
                         estimated=True)
     # a crash mid-append leaves a torn final line - reads must survive it
-    with open(trade_log.TRADE_LOG_FILE, "a", encoding="utf-8") as f:
+    from tophat.store import tenant
+    with open(tenant.resolve(trade_log.TRADE_LOG_FILE), "a", encoding="utf-8") as f:
         f.write('{"type":"trade","account')
     evts = trade_log.read_events()
     assert [e["type"] for e in evts] == ["trade", "payout"]

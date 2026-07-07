@@ -7,6 +7,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from tophat.store import tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import REGISTRY_FILE
 
@@ -51,7 +52,8 @@ class AccountRegistry:
         return e.enabled
 
 
-def load_registry(path: Path = REGISTRY_FILE) -> AccountRegistry:
+def load_registry(path: Path | None = None) -> AccountRegistry:
+    path = tenant.resolve(REGISTRY_FILE) if path is None else path
     if not path.exists():
         return AccountRegistry()
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -62,7 +64,8 @@ def load_registry(path: Path = REGISTRY_FILE) -> AccountRegistry:
     return reg
 
 
-def save_registry(reg: AccountRegistry, path: Path = REGISTRY_FILE) -> None:
+def save_registry(reg: AccountRegistry, path: Path | None = None) -> None:
+    path = tenant.resolve(REGISTRY_FILE) if path is None else path
     payload = {
         "settings": {
             "confirm_nukes": reg.settings.confirm_nukes,

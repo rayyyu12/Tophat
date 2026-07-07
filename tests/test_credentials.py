@@ -15,8 +15,9 @@ def test_add_and_load():
 
 
 def test_key_is_encrypted_at_rest():
+    from tophat.store import tenant
     C.add_credential("bob", "PLAINTEXT-SECRET-XYZ")
-    raw = CREDENTIALS_FILE.read_text(encoding="utf-8")
+    raw = tenant.resolve(CREDENTIALS_FILE).read_text(encoding="utf-8")
     assert "PLAINTEXT-SECRET-XYZ" not in raw       # never written in the clear
     assert "api_key_enc" in raw
 

@@ -28,7 +28,7 @@ def test_signal_plan_orients_by_drive():
     p = signal_plan("apex-nuke", 1)
     assert (p.direction, p.contracts, p.target_pts, p.stop_pts) == (1, 2, 32.5, 25.0)
     p = signal_plan("apex-flip", -1)
-    assert (p.direction, p.contracts, p.target_pts, p.stop_pts) == (-1, 1, 16.25, 50.0)
+    assert (p.direction, p.contracts, p.target_pts, p.stop_pts) == (-1, 1, 14.25, 50.0)
     assert signal_plan("apex-eval", 0) is None       # flat drive -> no fire
     assert signal_plan("nope", 1) is None
     assert p.manual_stop                              # stop leg always copied

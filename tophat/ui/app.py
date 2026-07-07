@@ -363,6 +363,10 @@ class TopHatApp(App):
 
 def run_dashboard() -> None:
     load_dotenv()
+    # Local single-operator tool: act as the operator user so store reads hit the
+    # same data/users/<uid>/ slice the dashboard uses (TOPHAT_USER_ID overrides).
+    from tophat.store import tenant
+    tenant.set_user(tenant.local_operator_uid())
     # Same single-instance guard as the web server: the TUI also logs in with the
     # shared API key and writes the shared state files, so it must not run beside
     # another TopHat instance.

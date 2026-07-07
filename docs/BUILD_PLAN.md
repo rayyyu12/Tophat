@@ -214,5 +214,10 @@ Until then, the single-operator mock/live broker in `tophat/server/service.py` i
 9. **Confirm Topstep payout rules** ([STRATEGY.md](STRATEGY.md) §6) and bake exact figures into Settings.
 9. **(Optional) Real-time fills via SignalR user hub** — reconcile currently uses REST balance, which
    is sufficient for the daily cadence; the user hub would make fills push-based and intraday.
-10. **(Optional) state JSON → DB**, and **multi-API-key** (§7) when sharing with friends.
+10. ✅ **Multi-user / multi-API-key** (§7, option 2 — shipped 2026-07-06): per-user data dirs
+   (`data/users/<uid>/`) via `tophat/store/tenant.py`; every login user gets their own encrypted
+   API keys, registry, states, settings, mirrors, sim templates, and broker pool; the automation
+   loop ticks each user's fleet independently. Users are created from the server console:
+   `python -m tophat.server.auth adduser friend@x.com '<password>'`. (State JSON → DB remains
+   optional/not needed at this scale.)
 11. **Practice-account forward test** vs backtest; then **go/no-go** and ONE live account before scaling.

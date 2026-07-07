@@ -174,18 +174,25 @@ def test_apex_consistency_fails_by_15_in_cycle_two():
     assert m.payout_ready
 
 
-def test_apex_never_retires_and_channel_resets_to_nuke():
+def test_apex_retires_at_six_and_channel_resets_to_nuke():
+    # Operator decision 2026-07-06: Apex harvests 6 payouts (was: never retired).
     m = MS.create_mirror("apex-50k", phase="funded")
     m.channel = "flip"
-    m.payouts_taken = 9
+    m.payouts_taken = 4
     m.equity = 5_000.0
     m.peak = 5_000.0
     m.win_days = 5
     m.window_profit = 3_000.0
     m.best_day = 1_250.0
-    mirror_sync.mark_mirror_payout(m)
-    assert m.phase == "funded" and m.payouts_taken == 10
+    mirror_sync.mark_mirror_payout(m)             # payout #5: still trading
+    assert m.phase == "funded" and m.payouts_taken == 5
     assert m.channel == "nuke"                    # new cycle opens on the nuke channel
+    m.win_days = 5
+    m.window_profit = 3_000.0
+    m.best_day = 1_250.0
+    m.payout_ready = True
+    mirror_sync.mark_mirror_payout(m)             # payout #6 retires the account
+    assert m.phase == "retired" and m.payouts_taken == 6
 
 
 def test_apex_eval_one_day_pass_no_consistency():

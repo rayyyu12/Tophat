@@ -23,9 +23,10 @@ from tophat.services import mirror_sync
 from tophat.services.guards import position_guard
 from tophat.services.lifecycle import mark_payout_taken, reconcile, record_pending
 from tophat.store.mirrors import load_mirrors, merge_save_mirrors
-from tophat.services.scheduler import assign_day, load_schedule, save_schedule
+from tophat.services.scheduler import Assignment, assign_day, load_schedule, save_schedule
 from tophat.services.status import (
     infer_phase_from_name, is_practice, lifecycle_label, sync_phase_from_name)
+from tophat.store import tenant
 from tophat.store.config import load_settings
 from tophat.store import trade_log
 from tophat.store.registry import load_registry, save_registry
@@ -86,10 +87,28 @@ _BROKER_GEN = 0
 # /api/Account/search - the burst that 429'd a freshly added key.
 _SNAPSHOT_LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
-# Only ONE trading session may run at a time in this process: the automation tick
+# Only ONE trading session may run at a time PER TENANT: the automation tick
 # (worker thread) and a manual Execute (API threadpool) must never interleave, or
-# both could read last_fire_date=="" and double-fire the same account.
-_RUN_LOCK = threading.Lock()
+# both could read last_fire_date=="" and double-fire the same account. Different
+# users' fleets are fully independent (separate files, separate brokers), so they
+# may run concurrently — the automation loop relies on that for on-time fires.
+_RUN_LOCKS: dict[str, threading.Lock] = {}
+
+
+def _tenant_key() -> str:
+    uid = tenant.get_user()
+    return f"u{uid}" if uid is not None else "global"
+
+
+def _ck(owner: str) -> str:
+    """Cache key for one credential's snapshot/broker reads, scoped per tenant so
+    two users' same-named ProjectX credentials can never share cache entries."""
+    return f"{_tenant_key()}:{owner}"
+
+
+def _run_lock() -> threading.Lock:
+    with _LOCKS_GUARD:
+        return _RUN_LOCKS.setdefault(_tenant_key(), threading.Lock())
 # Serializes registry load→mutate→save cycles across API handlers and sessions.
 _REG_LOCK = threading.Lock()
 # Drive (09:30–09:45 opening range) is stable once computed for the session.
@@ -351,9 +370,12 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
         st = states[a.account_id]
         entry = registry.entry(a.account_id)
         enabled = entry.enabled
+        practice = is_practice(a.name)
         if not enabled:
             n_disabled += 1
-        if st.phase == Phase.EVAL:
+        if practice:
+            pass          # not a strategy ticket - stays out of the fleet counts
+        elif st.phase == Phase.EVAL:
             n_eval += 1
         elif st.phase == Phase.FUNDED:
             n_funded += 1
@@ -361,14 +383,15 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
         preview = preview_assignments.get(a.account_id)
         dec = decide(cfg, st, drive)
         terminal = st.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED)
-        practice = is_practice(a.name)
         mll_dead = _below_mll(cfg, st, a.balance)
         tradeable = (_effective_can_trade(a.can_trade, entry) and not practice
                      and not mll_dead)
         payout_ready = st.payout_ready and not terminal
         # Status reflects the real operational state (decoupled from program phase):
         # terminal phases surface as blown/passed/retired; otherwise active/inactive.
-        status = st.phase.value if terminal else ("active" if tradeable else "inactive")
+        # Practice accounts are always shown as active (they just never fire orders).
+        display_active = tradeable or (practice and _effective_can_trade(a.can_trade, entry))
+        status = st.phase.value if terminal else ("active" if display_active else "inactive")
         # slot_kind: does this account compete for a (capped) eval or nuke slot? Lets the
         # UI apply the cap instantly on toggle (flips don't compete — they always run).
         if terminal or payout_ready or not tradeable:
@@ -435,12 +458,13 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
             "name": entry.alias or a.name,
             "broker_name": a.name,
             "enabled": enabled,
-            "can_trade": tradeable,
+            "can_trade": display_active,
             "broker_can_trade": a.can_trade,
             "force_inactive": entry.force_inactive,
             "exclude_analytics": entry.exclude_analytics,
             "signal_plan": entry.signal_plan,
-            "trading_status": "active" if tradeable else "inactive",
+            "practice": practice,
+            "trading_status": "active" if display_active else "inactive",
             "status": status,
             "terminal": terminal,
             "slot_kind": slot_kind,
@@ -449,7 +473,7 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
             # Program type (eval/funded) for the Phase column — stays eval/funded
             # even for terminal accounts, so Status alone carries blown/passed/retired.
             "program": infer_phase_from_name(a.name).value,
-            "lifecycle": lifecycle_label(cfg, st, can_trade=tradeable),
+            "lifecycle": "practice" if practice else lifecycle_label(cfg, st, can_trade=tradeable),
             "balance": round(a.balance, 2),
             "equity": round(st.equity, 2),
             "peak": round(st.peak_equity_eod, 2),
@@ -518,7 +542,7 @@ def build_dashboard(pool: list[BrokerHandle], *, force: bool = False) -> dict:
             continue
         try:
             snap = build_snapshot(h.broker, mode=h.mode, force=force,
-                                  key=h.owner, owner=h.owner)
+                                  key=_ck(h.owner), owner=h.owner)
         except Exception as exc:                       # one bad broker ≠ dead dashboard
             groups.append({"owner": h.owner, "mode": h.mode, "error": str(exc),
                            "accounts": [], "counts": _empty_counts()})
@@ -567,9 +591,9 @@ def run_all_sessions(pool: list[BrokerHandle], *, execute: bool,
     drive = "FLAT"
     drive_src = ""
 
-    # One session pass at a time: a manual Execute racing an automation tick would
-    # let both observe last_fire_date=="" and double-fire the same accounts.
-    with _RUN_LOCK:
+    # One session pass at a time per tenant: a manual Execute racing an automation
+    # tick would let both observe last_fire_date=="" and double-fire the same accounts.
+    with _run_lock():
         for h in pool:
             if h.broker is None:
                 groups.append({"owner": h.owner, "error": h.error or "unavailable",
@@ -611,7 +635,7 @@ def account_names_and_balances(
         if h.broker is None:
             continue
         try:
-            snap = build_snapshot(h.broker, mode=h.mode, key=h.owner, owner=h.owner)
+            snap = build_snapshot(h.broker, mode=h.mode, key=_ck(h.owner), owner=h.owner)
         except Exception:
             continue
         for r in snap["accounts"]:
@@ -631,7 +655,7 @@ def find_handle_for_account(pool: list[BrokerHandle], account_id: int) -> Broker
             continue
         try:
             # Use the cached snapshot rows, not a fresh list_accounts() per broker.
-            snap = build_snapshot(h.broker, mode=h.mode, key=h.owner, owner=h.owner)
+            snap = build_snapshot(h.broker, mode=h.mode, key=_ck(h.owner), owner=h.owner)
             if any(r["account_id"] == account_id for r in snap["accounts"]):
                 return h
         except Exception:
@@ -765,16 +789,21 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
 
     tradeable = {}
     signal_keys: dict[int, str] = {}   # aid -> engine.SIGNAL_PLAN_TEMPLATES key
+    practice_ids: set[int] = set()     # manual validation fires - never slot-assigned
     for a in accounts:
         entry = registry.entry(a.account_id)
         if not _effective_can_trade(a.can_trade, entry) or not entry.enabled:
             continue
         sig = entry.signal_plan if entry.signal_plan in SIGNAL_PLAN_TEMPLATES else ""
-        if is_practice(a.name) and not manual and not sig:
+        if is_practice(a.name) and not sig:
             # Practice accounts never auto-trade or hold an eval slot. Two
-            # exceptions: manual Execute (the validation path), and an explicit
-            # signal-channel designation (fires its signal bracket for the copier).
-            continue
+            # exceptions: an explicit signal-channel designation (fires its signal
+            # bracket for the copier), and manual Execute — the validation path,
+            # which fires OUTSIDE assign_day so it can never take a capped
+            # eval/nuke slot or write schedule rotation state.
+            if not manual:
+                continue
+            practice_ids.add(a.account_id)
         is_new = a.account_id not in states
         st = get_or_create(states, a.account_id)
         if is_new:
@@ -817,10 +846,12 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 if st.phase == Phase.BLOWN:
                     _trade.warning("BLOWN acct=%s — trailing floor breached at bal=$%.2f", aid, cur_bal)
                 # Feed the Analytics page: one immutable record per resolved trade.
-                trade_log.log_event(
-                    "trade", owner=owner, account_id=aid, trade_date=pend_date,
-                    label=pend_label, outcome=out, pnl=round(cur_bal - entry_bal, 2),
-                    balance=round(cur_bal, 2), phase=st.phase.value)
+                # Practice validation fires stay out - fake money isn't strategy P&L.
+                if aid not in practice_ids:
+                    trade_log.log_event(
+                        "trade", owner=owner, account_id=aid, trade_date=pend_date,
+                        label=pend_label, outcome=out, pnl=round(cur_bal - entry_bal, 2),
+                        balance=round(cur_bal, 2), phase=st.phase.value)
                 # Followers book the leader's ACTUAL delta scaled by their multiplier.
                 mirror_touched.extend(mirror_sync.apply_leader_outcome(
                     mirrors, aid, cur_bal - entry_bal, today))
@@ -828,9 +859,10 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 registry.entry(aid).enabled = False  # surface for manual withdrawal
                 auto_disabled.append(aid)
 
-    # Signal channels never compete for eval/nuke slots — the scheduler only ever
-    # sees the strategy fleet.
-    strategy = {aid: st for aid, st in tradeable.items() if aid not in signal_keys}
+    # Signal channels and practice accounts never compete for eval/nuke slots —
+    # the scheduler only ever sees the strategy fleet.
+    strategy = {aid: st for aid, st in tradeable.items()
+                if aid not in signal_keys and aid not in practice_ids}
     enabled_at = {aid: registry.entry(aid).enabled_at for aid in strategy}
     assignments, sched = assign_day(strategy, settings, today, load_schedule(), enabled_at)
 
@@ -853,7 +885,12 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             results.append({"account_id": aid, "action": "idle",
                             "note": "balance at/below MLL floor - marked inactive"})
             continue
-        asg = assignments[aid]
+        if aid in practice_ids:
+            # Manual validation fire: runs the engine's plan on the practice
+            # account without holding a slot or touching the schedule.
+            asg = Assignment(aid, "practice", "", "practice validation - no slot held")
+        else:
+            asg = assignments[aid]
         if asg.action in ("idle", "retire"):
             results.append({"account_id": aid, "action": asg.action, "note": asg.note})
             continue
@@ -990,7 +1027,7 @@ def list_accounts_detail(pool: list[BrokerHandle]) -> list[dict]:
     """Full account rows for the edit-accounts page, unioned across every credential."""
     # Build snapshots first — that's what creates+persists state for new accounts —
     # then read states so freshly discovered accounts are present.
-    snaps = [(h, build_snapshot(h.broker, mode=h.mode, key=h.owner, owner=h.owner))
+    snaps = [(h, build_snapshot(h.broker, mode=h.mode, key=_ck(h.owner), owner=h.owner))
              for h in pool if h.broker is not None]
     states = load_all()
     registry = load_registry()
@@ -1021,7 +1058,7 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
     if handle is None:
         return {"account_id": account_id, "error": "unknown account"}
     # Cached broker reads - saving an account must not cost a REST round-trip.
-    reads = _read_broker(handle.broker, handle.owner or handle.mode)
+    reads = _read_broker(handle.broker, _ck(handle.owner or handle.mode))
     accounts = {a.account_id: a for a in reads["accounts"]}
     if account_id not in accounts:
         return {"account_id": account_id, "error": "unknown account"}
@@ -1089,7 +1126,8 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
     return {
         "account_id": account_id,
         "ok": True,
-        "lifecycle": lifecycle_label(cfg, st, can_trade=eff),
+        "lifecycle": ("practice" if is_practice(a.name)
+                      else lifecycle_label(cfg, st, can_trade=eff)),
         "state": state_to_dict(st),
         "enabled": entry.enabled,
         "force_inactive": entry.force_inactive,

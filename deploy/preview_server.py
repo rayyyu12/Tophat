@@ -21,6 +21,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from tophat.server import auth                  # noqa: E402  (after env setup)
 auth.create_user("preview@x.com", "preview")
+auth.create_user("preview2@x.com", "preview2")  # second tenant: isolation demos
 
 import uvicorn                                  # noqa: E402
 from tophat.server.app import app               # noqa: E402

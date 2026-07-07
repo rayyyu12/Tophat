@@ -57,25 +57,30 @@ distribution (independent-tickets approximation).
 Money model: net cash = payouts banked - tickets/activations. Account equity
 above base is paper (the firm resets it) and never counts as cash.
 
-## Data source: TICK data (cache not built yet)
+## Data source: TICK data (cache BUILT 2026-07-06 from the real exports)
 
 The simulator runs on 1-SECOND bars aggregated from NinjaTrader TICK data (the
-original research fidelity - `data/cache/nq_rth_1s.parquet` was 1s). The
-operator's ~251 days of NQ tick data live on another machine; until they are
-imported and exported here, the Simulation page deliberately shows NO data
-(no cache = Run disabled) - accurate-or-nothing by operator decision
-(2026-07-05). An earlier minute-bar cache was removed for the same reason.
+original research fidelity - `data/cache/nq_rth_1s.parquet` was 1s). The cache
+(`research/reconstruction/sim_ticks_rth_1s.parquet`) is now built from the
+operator's real tick text exports (`data/NQ *.txt`) and validated bar-for-bar
+against the original research cache: all 5.51M overlapping bars align, OHLC
+identical on 99.9998%. Coverage 2025-06-23 .. 2026-06-30 (285 usable days).
 
-To build the cache once tick data is available:
+To rebuild (e.g. after exporting newer ticks from NinjaTrader):
 
     python research/reconstruction/export_sim_ticks.py            # NT8 tick db
-    python research/reconstruction/export_sim_ticks.py --txt DIR  # NT text exports
+    python research/reconstruction/export_sim_ticks.py --txt data # NT text exports
 
-CAUTION: the .ncd tick decoder is UNVERIFIED (no tick files existed on this
-machine when written). It hard-validates its output (monotonic timestamps,
-sane prices, RTH volume peak) and refuses to write the cache on failure - fall
-back to NinjaTrader text exports (--txt) in that case. Restart the server (or
-reload the page in a new process) after building.
+TIMEZONE (bug fixed 2026-07-06): NT text exports are **UTC**; the .ncd db is
+machine-local CT. The exporter converts each source correctly now — an earlier
+build assumed CT for the txt path and produced shifted bars that slipped past
+the volume-peak validation (the 13:30 UTC open burst overlaps the CT check
+window; the validator now takes the expected peak range per source).
+
+CAUTION: the .ncd tick decoder remains UNVERIFIED (no .ncd tick files existed
+on the machine where it was written). It hard-validates its output and refuses
+to write the cache on failure - fall back to text exports (--txt) in that
+case. Restart the server (or reload the page in a new process) after building.
 
 ## Deferred (revisit when needed)
 

@@ -6,13 +6,39 @@ __pycache__/
 venv/
 _test_signalr.py
 
-# Runtime state, secrets, login DB, and large local market data.
-# The app re-creates data/ on startup (see tophat/store/paths.py) — nothing here
-# belongs in the repo. NOTE: data/.secret (session-signing key) and data/tophat.db
-# (users + password hashes) were previously committed; they are now untracked.
-
+# Large local market data + derived caches — NEVER commit (multi-GB txt exports;
+# GitHub rejects files >100MB). App state JSONs under data/ are tracked for now
+# (see security notes in docs) but machine-local runtime files stay out.
+data/NQ*.txt
+data/cache/
+data/schedule_state.json
+data/sim_runs/
+data/trade_log.jsonl
+# Per-user runtime state (multi-tenant stores; tophat/store/tenant.py) —
+# contains every user's API keys and lifecycle state. Never commit.
+data/users/
+# Global runtime files: session-signing/crypto master key, login DB (password
+# hashes), instance lock. Untracked 2026-07-06 (were committed — see
+# docs/SECURITY_AUDIT_2026-07-06.md: rotate the secret + keys, then consider a
+# history rewrite before sharing the repo).
+data/.secret
+data/tophat.db
+data/tophat.lock
+# Legacy pre-multi-tenant locations of per-user state (now live in data/users/)
+data/account_registry.json
+data/account_states.json
+data/credentials.json
+data/mirrors.json
+data/settings.json
+data/sim_templates.json
+data/copier_plans/
 
 # Local research / backtest scripts + datasets — kept locally, not shipped.
+# Only research/reconstruction/ (scripts + small outputs) is tracked; its
+# tick-derived bar cache is regenerated locally and stays out of the repo.
+research/*
+!research/reconstruction/
+research/reconstruction/*.parquet
 
 
 # Root-level dev shim scripts (thin redirects into research.* / tophat.*).

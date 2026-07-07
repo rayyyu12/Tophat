@@ -19,6 +19,7 @@ from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+from tophat.store import tenant
 from tophat.store.paths import TRADE_LOG_FILE
 
 _ET = ZoneInfo("America/New_York")
@@ -32,15 +33,17 @@ def log_event(event_type: str, **fields) -> dict:
     evt = {"ts": now.isoformat(timespec="seconds"),
            "date": now.strftime("%Y-%m-%d"), "type": event_type, **fields}
     line = json.dumps(evt, separators=(",", ":"), default=str)
+    log_file = tenant.resolve(TRADE_LOG_FILE)
     with _LOCK:
-        TRADE_LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-        with open(TRADE_LOG_FILE, "a", encoding="utf-8") as f:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_file, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     return evt
 
 
-def read_events(path: Path = TRADE_LOG_FILE) -> list[dict]:
+def read_events(path: Path | None = None) -> list[dict]:
     """All events, oldest first. Tolerates a torn final line after a crash."""
+    path = tenant.resolve(TRADE_LOG_FILE) if path is None else path
     if not path.exists():
         return []
     out: list[dict] = []

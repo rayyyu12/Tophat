@@ -1,11 +1,15 @@
 # Settings
 
 Strategy and automation parameters. Saved values persist server-side and apply
-fleet-wide.
+fleet-wide — where "fleet" means **your** fleet: every login user has their own
+independent settings, API keys, accounts, and mirrors. Nothing on this page is
+visible to (or affects) any other user.
 
 ## Project X API keys
 
 - One key per ProjectX username. Keys are encrypted at rest; reveal on demand.
+- Keys belong to the logged-in user only — other logins can never list or
+  reveal them.
 - Each username gets its own table on the Trading page and runs its own daily rules - the 1-nuke / 2-eval caps apply per key, not per fleet.
 - Deleting a key removes its accounts from the dashboard (the accounts themselves are untouched).
 

@@ -657,11 +657,20 @@
         <div class="panel" style="margin-bottom:18px">
           <div class="head"><h2>Net cash per ticket, day by day</h2>
             <span class="chart-legend">
-              <span class="lg"><i style="background:var(--accent)"></i>Typical (median)</span>
-              <span class="lg"><i style="background:var(--accent);opacity:.35"></i>Middle 50%</span>
-              <span class="lg"><i style="background:var(--accent);opacity:.16"></i>Middle 80%</span>
+              <span class="lg"><i style="background:var(--accent)"></i>Median ticket</span>
+              <span class="lg"><i style="background:var(--accent);opacity:.35"></i>Middle 50% of tickets</span>
+              <span class="lg"><i style="background:var(--accent);opacity:.16"></i>Middle 80% of tickets</span>
             </span></div>
           <div id="simChart"></div>
+          <div class="hint" style="margin:10px 16px 14px">
+            How to read this: on each day, all simulated tickets are lined up and the
+            chart marks the median and the middle 50% / 80% of their net cash — the
+            lines are cross-sections of the whole fleet, not one ticket's journey.
+            A ticket that finishes (blown or retired) keeps its final net for the rest
+            of the chart, so a line going flat means that slice of tickets is done
+            trading — a plateau at, say, +$3,200 is locked-in profit (payouts banked
+            minus costs), not an account sitting idle. The chart window ends at day
+            130; longer-running tickets still count in the stats above.</div>
         </div>
         <div class="ops-cards">
           <div class="panel">
@@ -1190,13 +1199,15 @@ function render(s){
       pendingToggle.delete(a.account_id);
   }
   // Stat cards count only VISIBLE rows - closed/inactive accounts sit in the
-  // hidden footer and must not inflate the fleet numbers.
+  // hidden footer and must not inflate the fleet numbers. Practice accounts are
+  // visible (always active) but aren't strategy tickets, so they don't count.
   const vis = (s.accounts||[]).filter(a=>!a.terminal && (a.can_trade || a.signal_plan));
-  $('#asOf').textContent = `Daily plans & execution · ${vis.length} active account${vis.length===1?'':'s'} · drive from ${locNote(s.drive_source||'-')}`;
+  const fleet = vis.filter(a=>!a.practice);
+  $('#asOf').textContent = `Daily plans & execution · ${fleet.length} active account${fleet.length===1?'':'s'} · drive from ${locNote(s.drive_source||'-')}`;
   $('#modeLabel').textContent = s.mode;
-  $('#cTotal').textContent = vis.length;
-  $('#cFunded').textContent = vis.filter(a=>a.phase==='funded').length;
-  $('#cEval').textContent = vis.filter(a=>a.phase==='eval').length;
+  $('#cTotal').textContent = fleet.length;
+  $('#cFunded').textContent = fleet.filter(a=>a.phase==='funded').length;
+  $('#cEval').textContent = fleet.filter(a=>a.phase==='eval').length;
   const d=(s.drive||'FLAT').toLowerCase();
   $('#cDrive').innerHTML = `<span class="pill ${d}">${s.drive}</span>`;
   // Manual Execute is for hands-on firing while disarmed; when automation is armed
@@ -2079,6 +2090,7 @@ function initSimForm(){
     set('dll',f.dll==null?1000:f.dll); set('trailing',f.trailing);
     set('eval_target_dollars',f.eval_target); set('eval_min_days',f.eval_min_days);
     set('payout_cap',f.payout_cap); set('winning_days_required',f.winning_days_required);
+    set('payouts_target',f.payouts_target);
     toast(`Prefilled ${f.label} rules`);
   };
 }
@@ -2178,19 +2190,28 @@ function renderSimResult(r){
   $('#simChart').innerHTML=simFanSvg(r.curve);
 
   const line=(lbl,val)=>`<div class="statline"><span class="lbl">${lbl}</span><span class="val">${val}</span></div>`;
-  let dist=line('Typical ticket (median)', usdSigned(r.net.median))
-    +line('Average ticket (mean)', usdSigned(r.net.mean))
+  let dist=line('Median ticket — the middle outcome', usdSigned(r.net.median))
+    +line('Mean ticket — long-run average (EV)', usdSigned(r.net.mean))
     +line('Unlucky ticket (worst 5%)', usdSigned(r.net.p5))
     +line('Lucky ticket (best 5%)', usdSigned(r.net.p95))
-    +line('Average payouts banked', usdSigned(r.net.mean_banked))
-    +line('Average cost per ticket', usdSigned(r.net.mean_costs))
+    +line('Payout dollars withdrawn (avg $ per ticket)', usdSigned(r.net.mean_banked))
+    +(r.net.mean_payouts==null?'':
+      line('Payouts taken (avg count per ticket)', r.net.mean_payouts))
+    +line('Money spent (avg per ticket: entry + activation)', usdSigned(r.net.mean_costs))
     +line('Tickets ending profitable', pct(r.probs.profitable))
     +line('Passed eval / blown', `${pct(r.probs.eval_passed)} / ${pct(r.probs.blown)}`)
     +line('Reached a payout / retired', `${pct(r.probs.paid_once)} / ${pct(r.probs.retired)}`);
-  if(r.fleet) dist+=line(`<b>Buying ${r.fleet.tickets} tickets - typical total</b>`,
+  if(r.fleet) dist+=line(`<b>Buying ${r.fleet.tickets} tickets - median total</b>`,
       `<b>${usdSigned(r.fleet.p50)}</b>`)
     +line(`${r.fleet.tickets} tickets - unlucky / lucky (5%)`,
       `${usdSigned(r.fleet.p5)} / ${usdSigned(r.fleet.p95)}`);
+  dist+=`<div class="hint" style="margin:12px 2px 2px">
+    <b>Median vs mean:</b> the <b>median</b> is the middle ticket if you sorted all
+    ${r.params.n_paths.toLocaleString()} simulated tickets — the realistic result of buying ONE ticket.
+    Most tickets lose their entry fee, so the median is usually negative. The <b>mean</b> is the
+    average across all tickets — a few big winners pull it far above the median. Buy N tickets and
+    your total converges toward N &times; mean. "Net" always = payout dollars withdrawn minus money
+    spent; account balance above the start is paper the firm keeps, so it never counts.</div>`;
   $('#simDist').innerHTML=dist;
 
   $('#simLegsMeta').textContent=`over ${r.days_used} historical days`;

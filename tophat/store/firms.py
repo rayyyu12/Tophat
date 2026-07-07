@@ -9,8 +9,9 @@ ship as code constants — there is deliberately no JSON overlay, so a stale dat
 can't silently diverge from the simulated rules.
 
 Key subtlety encoded here: qualifying/win-day minimums compare against the day's
-BOOKED (net) P&L. A $250-gross Apex flip nets ~$230 and never qualifies — hence the
-locked $325 flip target (nets ~$305).
+BOOKED (net) P&L. A $250-gross Apex flip nets below the $250 bar and never
+qualifies — hence the flip target locked ABOVE the bar: $285 gross / ~$278 net
+(14.25pt; re-audited from $325 on 2026-07-06, docs/STATS_AUDIT_2026-07-06.md).
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ class FirmProfile:
     winning_days_required: int = 5  # qualifying days needed per payout window
     payout_style: str = "half-profit-cap"   # or "apex-gate"
     payout_cap: float = 2_000.0
+    payouts_target: int = 4         # retire the account after this many payouts
     # copier / fleet management
     copier_scale_eval: float = 1.0  # follower multiplier during eval (1.0 = 1:1)
     max_funded: int = 5
@@ -79,6 +81,7 @@ APEX = FirmProfile(
     dll=1_000.0, trailing=2_000.0,
     eval_target=3_000.0, eval_consistency=None, eval_min_days=1,
     win_day_min=250.0, payout_style="apex-gate", payout_cap=2_000.0,
+    payouts_target=6,               # operator decision 2026-07-06: harvest 6, not 4
     max_funded=20, eval_pipeline_target=10,  # bought in 10-eval cohorts
     apex_min_balance=2_600.0, apex_consistency=0.50, payout_request=1_500.0,
 )

@@ -28,8 +28,8 @@ roster. Pick an account, edit, Save.
 - **Exclude from analytics**: keeps this account out of Analytics counts and spend. Use for pre-project or leftover accounts.
 - **Signal channel**: designates the account as a copier signal leader. It fires that fixed bracket daily and leaves the strategy fleet entirely. Use the practice account or a disposable micro eval:
   - `apex-nuke`: 32.5 / 25 pt x 2 minis
-  - `apex-flip`: 16.25 / 50 pt x 1 mini
-  - `apex-eval`: 30 / 10 pt x 5 minis
+  - `apex-flip`: 14.25 / 50 pt x 1 mini ($285 gross - re-locked 2026-07-06)
+  - `apex-eval`: 31.5 / 10 pt x 5 minis (nets >= $3,000 in one day after commissions)
 - **Base balance**: $50,000 for evals, $0 for funded Express. Follower firms whose funded accounts start at $50,000 (Apex, Lucid, Tradeify) need no setting - mirrors use profit-relative accounting, so their floor math is built in.
 - **Sync balance**: pulls equity and peak from the live broker balance on save.
 

@@ -120,12 +120,18 @@ class Decision:
 # the copy-trader can distribute them to API-less follower firms. Signal accounts
 # bypass decide() and the eval/funded lifecycle entirely; the bracket (including
 # the stop leg — followers rely on it being copied) is always fully specified.
+# Levels re-audited on the 285-day tick cache and re-locked 2026-07-06
+# (docs/STATS_AUDIT_2026-07-06.md, operator-approved):
+#  - flip 16.25 -> 14.25pt ($285 gross / ~$278 net): +$70/ticket EV, still
+#    ~5.6 ticks above the $250 NET win-day bar at $7/mini commissions.
+#  - eval 30 -> 31.5pt: 30pt x 5 = $3,000 GROSS nets ~$2,960, so a 1-day pass
+#    was arithmetically impossible after commissions (pass 31% -> 43%).
 SIGNAL_PLAN_TEMPLATES: dict[str, TradePlan] = {
     "apex-nuke": TradePlan(direction=1, contracts=2, target_pts=32.5, stop_pts=25.0,
                            label="sig-apex-nuke"),
-    "apex-flip": TradePlan(direction=1, contracts=1, target_pts=16.25, stop_pts=50.0,
+    "apex-flip": TradePlan(direction=1, contracts=1, target_pts=14.25, stop_pts=50.0,
                            label="sig-apex-flip"),
-    "apex-eval": TradePlan(direction=1, contracts=5, target_pts=30.0, stop_pts=10.0,
+    "apex-eval": TradePlan(direction=1, contracts=5, target_pts=31.5, stop_pts=10.0,
                            label="sig-apex-eval"),
 }
 

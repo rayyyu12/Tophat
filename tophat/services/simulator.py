@@ -223,12 +223,22 @@ def _run_path(rng: np.random.Generator, views: list[DayView], memo: _OutcomeMemo
               cfg: AccountConfig, p: SimParams) -> dict:
     n_days_pool = len(views)
     st = _fresh_state(cfg, p.lifecycle)
+    start_eq = st.equity
     banked = 0.0
     costs = p.ticket_cost + (p.activation_cost if p.lifecycle == "funded" else 0.0)
     passed = False
     day = 0
     curve = np.empty(CURVE_HORIZON)
     seq_pos = int(rng.integers(n_days_pool)) if p.sampling == "sequential" else 0
+
+    def net_now() -> float:
+        # Lifecycle modes: cash = payouts banked - costs (equity above base is
+        # paper; the firm resets it). Single-bracket mode has no payout
+        # mechanics at all - the day P&L stream IS the result, so mark equity
+        # to market (otherwise every single-mode net reads -ticket_cost).
+        if p.lifecycle == "single":
+            return (st.equity - start_eq) - costs
+        return banked - costs
 
     while day < p.max_days:
         if p.sampling == "sequential":
@@ -274,7 +284,7 @@ def _run_path(rng: np.random.Generator, views: list[DayView], memo: _OutcomeMemo
                         mark_payout_taken(cfg, st)
 
         if day < CURVE_HORIZON:
-            curve[day] = banked - costs
+            curve[day] = net_now()
         day += 1
 
         if st.phase == Phase.PASSED:
@@ -288,9 +298,9 @@ def _run_path(rng: np.random.Generator, views: list[DayView], memo: _OutcomeMemo
             break
 
     if day < CURVE_HORIZON:
-        curve[day:] = banked - costs
+        curve[day:] = net_now()
     return {
-        "net": banked - costs,
+        "net": net_now(),
         "banked": banked,
         "costs": costs,
         "payouts": st.payouts_taken,
@@ -412,6 +422,8 @@ def run_sim(params: SimParams, views: list[DayView]) -> dict:
             "p95": round(float(np.percentile(nets, 95)), 2),
             "mean_banked": round(float(np.mean([x["banked"] for x in paths])), 2),
             "mean_costs": round(float(np.mean([x["costs"] for x in paths])), 2),
+            # average COUNT of payouts taken per ticket (mean_banked is dollars)
+            "mean_payouts": round(float(np.mean([x["payouts"] for x in paths])), 2),
         },
         "days_to_outcome": {
             "mean": round(float(days_arr.mean()), 1),

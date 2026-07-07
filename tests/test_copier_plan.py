@@ -71,6 +71,39 @@ def test_waiting_mirror_pairs_with_fresh_funded_once():
     assert lines_for(plan, mapped, "MAP")
 
 
+def test_tradeify_eval_finisher_downsizes_last_day():
+    """Near the pass bar, the solver cuts the Tradeify multiplier so the last
+    day trades just enough minis (same win probability, smaller red day)."""
+    m = MS.create_mirror("tradeify-50k", leader_id=1)
+    ms = MS.load_mirrors()
+    mm = ms[m.mirror_id]
+    # two booked $1,212-net win days: profit 2,424, best 1,212 -> bar ~3,030;
+    # remaining ~666 -> 3 minis -> 0.6x (not the standard 0.8x)
+    mm.days_traded = 2
+    mm.equity = 2_424.0
+    mm.eval_best_day = 1_212.0
+    plan = cp.build_plan([L(1)], ms, TODAY)
+    assert plan.desired[m.mirror_id].multiplier == 0.6
+    sm = lines_for(plan, m.mirror_id, "SET_MULT")
+    assert sm and "finisher" in sm[0].reason
+    # fresh eval keeps the standard scale
+    f = MS.create_mirror("tradeify-50k", leader_id=1)
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1)], ms, TODAY)
+    assert plan.desired[f.mirror_id].multiplier == 0.8
+
+
+def test_lucid_eval_never_downsizes():
+    m = MS.create_mirror("lucid-50k", leader_id=1)
+    ms = MS.load_mirrors()
+    mm = ms[m.mirror_id]
+    mm.days_traded = 1
+    mm.equity = 2_900.0        # one leader day from passing
+    mm.eval_best_day = 1_530.0
+    plan = cp.build_plan([L(1)], ms, TODAY)
+    assert plan.desired[m.mirror_id].multiplier == 1.0   # pure clone, lockstep
+
+
 def test_payout_ready_parks_and_queues():
     m = MS.create_mirror("lucid-50k", leader_id=1, phase="funded")
     ms = MS.load_mirrors()

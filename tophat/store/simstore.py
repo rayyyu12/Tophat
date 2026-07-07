@@ -13,6 +13,7 @@ import threading
 import time
 from pathlib import Path
 
+from tophat.store import tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import SIM_RUNS_DIR, SIM_TEMPLATES_FILE
 
@@ -29,7 +30,8 @@ def _write(raw: dict, path: Path) -> None:
     atomic_write_text(path, json.dumps(raw, indent=2))
 
 
-def list_templates(path: Path = SIM_TEMPLATES_FILE) -> list[dict]:
+def list_templates(path: Path | None = None) -> list[dict]:
+    path = tenant.resolve(SIM_TEMPLATES_FILE) if path is None else path
     raw = _load(path)
     out = list(raw["templates"].values())
     out.sort(key=lambda t: t.get("created_at", 0.0))
@@ -46,7 +48,8 @@ def _slug(name: str, taken: set[str]) -> str:
 
 
 def save_template(name: str, params: dict, *, summary: dict | None = None,
-                  path: Path = SIM_TEMPLATES_FILE) -> dict:
+                  path: Path | None = None) -> dict:
+    path = tenant.resolve(SIM_TEMPLATES_FILE) if path is None else path
     name = str(name).strip()
     if not name:
         raise ValueError("template name required")
@@ -71,9 +74,11 @@ def save_template(name: str, params: dict, *, summary: dict | None = None,
 
 
 def attach_run(template_id: str, result: dict, *,
-               path: Path = SIM_TEMPLATES_FILE,
-               runs_dir: Path = SIM_RUNS_DIR) -> dict | None:
+               path: Path | None = None,
+               runs_dir: Path | None = None) -> dict | None:
     """Store a full run result for a template and refresh its inline summary."""
+    path = tenant.resolve(SIM_TEMPLATES_FILE) if path is None else path
+    runs_dir = tenant.resolve(SIM_RUNS_DIR) if runs_dir is None else runs_dir
     with _IO_LOCK:
         raw = _load(path)
         t = raw["templates"].get(template_id)
@@ -93,15 +98,18 @@ def attach_run(template_id: str, result: dict, *,
         return t
 
 
-def load_run(template_id: str, runs_dir: Path = SIM_RUNS_DIR) -> dict | None:
+def load_run(template_id: str, runs_dir: Path | None = None) -> dict | None:
+    runs_dir = tenant.resolve(SIM_RUNS_DIR) if runs_dir is None else runs_dir
     p = runs_dir / f"{template_id}.json"
     if not p.exists():
         return None
     return json.loads(p.read_text(encoding="utf-8"))
 
 
-def delete_template(template_id: str, *, path: Path = SIM_TEMPLATES_FILE,
-                    runs_dir: Path = SIM_RUNS_DIR) -> bool:
+def delete_template(template_id: str, *, path: Path | None = None,
+                    runs_dir: Path | None = None) -> bool:
+    path = tenant.resolve(SIM_TEMPLATES_FILE) if path is None else path
+    runs_dir = tenant.resolve(SIM_RUNS_DIR) if runs_dir is None else runs_dir
     with _IO_LOCK:
         raw = _load(path)
         if template_id not in raw["templates"]:

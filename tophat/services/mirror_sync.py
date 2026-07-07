@@ -147,7 +147,9 @@ def pair_waiting(m: MirrorAccount, leader_id: int) -> None:
 
 def mark_mirror_payout(m: MirrorAccount) -> float:
     """Operator confirms the firm paid. Books the withdrawal, resets the window,
-    retires clone-firm mirrors after the 4th payout (leader lifecycle parity)."""
+    retires the mirror after its firm's payouts_target (4 for the clone firms,
+    6 for Apex — operator decision 2026-07-06; previously apex-gate mirrors
+    never retired on payout count)."""
     from tophat.store import trade_log
     amount = preview_payout(m)
     m.equity -= amount
@@ -162,7 +164,7 @@ def mark_mirror_payout(m: MirrorAccount) -> float:
     firm = get_firm(m.firm)
     if firm.payout_style == "apex-gate":
         m.channel = "nuke"          # new cycle opens with a nuke (locked policy)
-    elif m.payouts_taken >= 4:
+    if m.payouts_taken >= firm.payouts_target:
         m.phase = "retired"
     return amount
 

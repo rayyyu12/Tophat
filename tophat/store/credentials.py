@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from tophat.store import crypto
+from tophat.store import crypto, tenant
 from tophat.store.atomic import atomic_write_text
 from tophat.store.paths import CREDENTIALS_FILE
 
@@ -29,7 +29,8 @@ class Credential:
     created_at: float = 0.0
 
 
-def load_credentials(path: Path = CREDENTIALS_FILE) -> list[Credential]:
+def load_credentials(path: Path | None = None) -> list[Credential]:
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     if not path.exists():
         return []
     raw = json.loads(path.read_text(encoding="utf-8"))
@@ -49,7 +50,8 @@ def load_credentials(path: Path = CREDENTIALS_FILE) -> list[Credential]:
     return out
 
 
-def save_credentials(creds: list[Credential], path: Path = CREDENTIALS_FILE) -> None:
+def save_credentials(creds: list[Credential], path: Path | None = None) -> None:
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     payload = {"credentials": [
         {
             "username": c.username,
@@ -68,8 +70,9 @@ def save_credentials(creds: list[Credential], path: Path = CREDENTIALS_FILE) -> 
 
 
 def add_credential(username: str, api_key: str, base_url: str = "",
-                   path: Path = CREDENTIALS_FILE) -> list[Credential]:
+                   path: Path | None = None) -> list[Credential]:
     """Add (or replace) the key for a username. One key per username — upsert."""
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     username = (username or "").strip()
     api_key = (api_key or "").strip()
     if not username or not api_key:
@@ -81,14 +84,16 @@ def add_credential(username: str, api_key: str, base_url: str = "",
     return creds
 
 
-def delete_credential(username: str, path: Path = CREDENTIALS_FILE) -> list[Credential]:
+def delete_credential(username: str, path: Path | None = None) -> list[Credential]:
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     creds = [c for c in load_credentials(path)
              if c.username.lower() != (username or "").strip().lower()]
     save_credentials(creds, path)
     return creds
 
 
-def get_credential(username: str, path: Path = CREDENTIALS_FILE) -> Credential | None:
+def get_credential(username: str, path: Path | None = None) -> Credential | None:
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     target = (username or "").strip().lower()
     for c in load_credentials(path):
         if c.username.lower() == target:
@@ -101,7 +106,7 @@ def mask(api_key: str) -> str:
     return "•" * len(api_key)
 
 
-def seed_credentials_from_env(path: Path = CREDENTIALS_FILE) -> None:
+def seed_credentials_from_env(path: Path | None = None) -> None:
     """One-time import of a .env PROJECTX credential into the encrypted store.
 
     A key configured via PROJECTX_USERNAME / PROJECTX_API_KEY is otherwise only
@@ -110,6 +115,7 @@ def seed_credentials_from_env(path: Path = CREDENTIALS_FILE) -> None:
     only runs in live mode and only when the store is still empty, so it never
     overrides keys the operator has added in the UI.
     """
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     if os.getenv("TOPHAT_BROKER", "mock").lower() != "live":
         return
     user = os.getenv("PROJECTX_USERNAME", "").strip()
@@ -119,8 +125,9 @@ def seed_credentials_from_env(path: Path = CREDENTIALS_FILE) -> None:
     add_credential(user, key, os.getenv("PROJECTX_API_URL", ""), path)
 
 
-def public_list(path: Path = CREDENTIALS_FILE) -> list[dict]:
+def public_list(path: Path | None = None) -> list[dict]:
     """Credentials safe to send to the client — masked, never the raw key."""
+    path = tenant.resolve(CREDENTIALS_FILE) if path is None else path
     return [
         {
             "username": c.username,
