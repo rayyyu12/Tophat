@@ -43,6 +43,12 @@ we can detect and roll back (see §8).
 - The feeds-rebuild-at-boot behavior is inferred from static analysis. It is
   **Gate A** (§9.2): proven empirically on throwaway accounts before any code
   touches an account that matters.
+- "Boot restores all entities" is **only true while stored broker tokens are
+  fresh** — see §11 (2026-07-07 evidence). A relaunch reliably restores the
+  ProjectX/Topstep connection (24 h token re-minted from the stored API key)
+  but does **not** restore a Tradovate entity whose 80-minute token has gone
+  stale; that needs a manual UI re-login (or the §11.4 auto-login hypothesis
+  to prove out at Gate A).
 - All table/column facts below were read from one machine's DB at migration
   version `20260521000000`. They are **assumptions to re-verify in Stage 0**,
   not eternal truths. The writer must re-check them at every run (schema guard).
@@ -377,3 +383,144 @@ edit that day.
    TopHat never sends imperative edit commands.
 9. When observed reality contradicts this document, **stop and update the
    document first** (with operator sign-off), then code.
+
+---
+
+## 11. Broker-connection lifecycle (evidence 2026-07-06/07) and operating rules
+
+Read directly from the live DB (`entities`, `notifications`) and TopHat's logs.
+All times ET unless marked.
+
+### 11.1 What actually keeps each connection alive
+
+| Side | Stored credential | Session token | Runtime renewal | After a socket break | After an app relaunch |
+|---|---|---|---|---|---|
+| **Tradovate** (Apex now; Lucid/Tradeify followers later) | encrypted token blob only (`entities.auth_token`, 428 chars) | **80 minutes** (`auth_token_expiry` = created + 1:20 exactly) | yes, in-memory while healthy (ran 6.5 h on one login); the DB row is never refreshed | reconnect FAILS once the stored token is stale: `broker:connection:auth:expired` nag **every 2 min, forever**; no auto-relogin | **stale token ⇒ not restored** (observed: 2026-07-06 20:34 CT boot came up Disconnected); vendor help (operator-read 2026-07-07) says closed **> 60–90 min ⇒ manual reconnect via Connections tab** — which conversely means a brief relaunch of a *healthy* session (tokens are being refreshed continuously) stays inside the window. The nightly quit→write→relaunch relies on exactly this; verify at Gate A |
+| **ProjectX/Topstep** | encrypted API key (96 chars — key, not a session) | **24 h**, minted at boot via loginKey | none needed within the day | reconnects fine while the 24 h token is valid (survived the 07:52 ET blip) | **restored reliably** (fresh loginKey every boot) |
+
+### 11.2 The two 2026-07-07 drops, reconstructed
+
+- **07:52:49 ET** — both entities' sockets died in the same second while TopHat's
+  HTTP polling (same machine) kept returning 200s at ~50 ms: a local socket-level
+  event (NIC/Wi-Fi/power), not an internet outage. Topstep reconnected in 9 s
+  (token valid). The Tradovate side entered the terminal auth-expired loop
+  (token stale since ~02:39 ET) — dead until manual re-login.
+- **09:14:47 ET** — Topstep session killed **server-side**: Tradecopia retried
+  for 3 m 13 s (SignalR 1 m/5 s pattern), permanently gave up 09:18:00 ET.
+  **Not** TopHat's REST traffic: TopHat's own session (same ProjectX user)
+  stayed valid all day (zero 401s), its polling coexisted with Tradecopia's
+  session for 7 h, and its fresh loginKey at 07:53 ET did not kick anything
+  for 81 minutes. **Resolved 2026-07-07 evening: the operator confirms a
+  TopstepX web-dashboard login that morning** — user-hub contention from the
+  dashboard is the working explanation (a ProjectX session sweep remains the
+  fallback theory). A similar kick on 2026-07-06 hit at 21:41 ET, 6 min after
+  a Tradecopia boot.
+
+### 11.3 Operating rules derived
+
+1. **TopHat's REST order placement cannot drop the copier** — no shared socket,
+   demonstrated coexistence. The real failure mode is a connection that is
+   *already* dead when the trade fires. Guard = watchdog, not fire-time logic.
+2. **Do not attach anything else to the copier's ProjectX user during market
+   hours**: no TopstepX web dashboard, and no TopHat TUI — `tophat/ui/app.py`'s
+   StreamManager opens `/hubs/user` on the same user and is exactly the
+   contention class suspected in 11.2. The headless server (REST-only) is safe.
+3. The **Watchdog** (`deploy/watchdog.py`, live since 2026-07-07) runs one-shot
+   at **09:00 and 09:25 ET** (the 09:14 kick beat a 09:00-only check) posting
+   only when action is needed, plus an 11:00 ET recap that always posts
+   (drive, per-account outcomes, payout-ready, drops) — the daily recap doubles
+   as the heartbeat proving the scheduler itself is alive.
+4. tc-apply gains a **`reconnect` mode**: quit → relaunch, **no DB write** —
+   the standard fix for a dead Topstep connection at any flat moment.
+   (Fixes ProjectX deterministically; fixes Tradovate only if §11.4 lands.)
+
+### 11.4 Open item — Tradovate auto-relogin hypothesis
+
+`%APPDATA%/tradecopia/auto_login_credentials` appeared 2026-07-07 00:21 CT,
+the minute the operator re-logged the Apex entity with "remember me"-style
+options. If the app now re-logins Tradovate entities at boot from stored
+credentials, a relaunch heals everything and §11.1's worst row improves to
+"restored". **Test at Gate A** (kill the Apex session, relaunch, observe).
+Until proven, plan for: Topstep = self-healing daily; Tradovate = manual
+re-login when (not if) it drops, surfaced by the watchdog.
+
+---
+
+## 12. Multi-user topology (TopHat hosted; 5–10 operators) — design sketch
+
+Context: TopHat is per-user multi-tenant already (`store/tenant.py`,
+`data/users/<uid>/`). The hosted deployment (Railway/Render) cannot reach into
+anyone's home network, and Tradecopia only exists as a Windows desktop app, so
+**every deployment shape needs a small agent on the Tradecopia host**. That
+agent is tc-apply grown one step: **Copier Sync** (`copier-sync`; the name says
+what it does — it syncs the copier to the night's plan. Formerly "tc-agent").
+
+**Decision 2026-07-07: per-user Tradecopia instances (shape B below).**
+
+### 12.1 The bridge: Copier Sync pulls, TopHat never pushes
+
+```
+┌────────── TopHat (Railway/Render) ─────────┐        ┌──── Tradecopia host (Windows) ────┐
+│ per-tenant mirrors/copier plan (existing)  │        │ copier-sync (nightly, ~03:00 ET): │
+│ GET  /api/ops/tc-desired   (box token) ────┼──HTTPS─▶ 1. pull desired state            │
+│ POST /api/ops/tc-status    (box token) ◀───┼────────┤ 2. tc-apply run (§7, unchanged)   │
+│ Discord webhook: apply result + watchdog ──┼─▶      │ 3. push status back               │
+└────────────────────────────────────────────┘        └───────────────────────────────────┘
+```
+
+- **Headless by design**: copier-sync is a background script run by Windows
+  Task Scheduler — no UI of its own. Its "UI" is TopHat: the Operations page
+  shows the last pulled plan and the last apply result; Discord gets the
+  nightly status line. Debugging happens via its local log file on the box.
+- **The box dials out** (pull): no inbound port on a residential box, no
+  dynamic DNS, no port forwarding — outbound HTTPS to the Railway URL is all
+  it ever opens, which works behind any home NAT. Nightly cadence — latency
+  is irrelevant by design.
+- **Auth / pairing**: TopHat Settings gains a **"Copier boxes"** section — the
+  operator names a box, TopHat mints it a long-random bearer token (scoped to
+  exactly the two `/api/ops/tc-*` endpoints, bound server-side to that tenant),
+  and the token goes into the box's local `copier_sync_config.json`. The same
+  section shows last check-in time and last apply result per box; revoke =
+  delete the token row. This is the field that links a user to their box.
+- The §5 file contracts stay the wire format (the JSON bodies are the files);
+  a host can still run air-gapped by downloading the file by hand.
+- **App relaunch is fully automated** already by §7.1's run sequence (graceful
+  quit → exclusive-lock check → write → relaunch → verify → rollback on
+  failure) — no human in the loop on a normal night. The §11 nuance is what
+  the relaunch *restores*: Topstep always (API-key relogin at boot); Tradovate
+  provided the app was healthy at quit and downtime stays well under an hour.
+
+### 12.2 One shared Tradecopia instance vs one per user
+
+| | **A. Shared instance** (one Windows host, all users' followers in one app) | **B. Instance per user** (each user: own host + app + copier-sync) |
+|---|---|---|
+| Cost | one machine (~$30–60/mo VPS or a home box) split N ways | ~$25–45/mo Windows VPS **per user** |
+| Contract change | **required**: desired-state keyed by tenant; "absence = removed" must become **per-tenant** (an agent may only delete rows for accounts its tenants own — a global-union writer would delete everyone else) plus a registry guaranteeing an account number maps to exactly one tenant | none — today's single-user contract as-is |
+| Blast radius | one bad write / one app crash / one broker ban question affects everyone | contained per user |
+| Broker logins | all users' Tradovate/ProjectX credentials typed into ONE app owned by whoever runs the box (trust + ToS question — resolve before building) | each user keeps their own |
+| Tradovate §11 manual re-logins | the shared-box operator does everyone's | each user does their own |
+| Verdict | cheapest, but couples uptime, trust, and liability | **start here**; A stays possible later because the tenant-keyed export (below) is a superset |
+
+Decision (design-ahead, build later): implement the exporter **tenant-keyed
+from day one** — `tc_desired_state.json` gains `"tenant": "<uid>"` and the
+writer refuses to touch accounts outside its configured tenant set. Shape B is
+then just "every copier-sync configured with one tenant", and shape A becomes
+one configured with several — no rewrite either way.
+
+### 12.3 Not building yet (explicitly)
+
+Multi-user is **not started**. Prerequisites before any code: Stage 0–2 of the
+single-user plan complete and stable (§9), the §11.4 Gate-A answer, and the
+shared-instance trust/ToS question answered by the operator. The only thing to
+do *now* is what §12.2 already fixed: keep every new contract field
+tenant-aware so nothing has to be redesigned.
+
+### 12.4 Discord reporting (live today, grows with the stages)
+
+- **Now**: the Watchdog posts a pre-market warning (09:00 + 09:25 ET checks,
+  silent when all clear) and an always-on 11:00 ET recap (drive, per-account
+  outcomes, payout-ready, drops-today) — the recap is the daily heartbeat.
+- **Stage 3+**: tc-apply posts its §5.2 status (applied/noop/aborted/
+  rolled_back + row counts) to the same webhook after every nightly run.
+- **Stage 4**: any non-applied/noop result and any intraday
+  `entities.is_connected` flip during 09:00–16:00 ET page the operator.

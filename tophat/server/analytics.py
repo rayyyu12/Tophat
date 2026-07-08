@@ -109,7 +109,16 @@ def _fleet_and_spend(pool, log_ids: set, excluded: set) -> tuple[dict, dict, lis
         names, balances = service.account_names_and_balances(pool)
     except Exception:
         pass
-    tracked = set(names) | set(log_ids)
+    # Registry accounts whose recorded phase is TERMINAL count as fleet too: an
+    # eval that passes (or blows) on a day with no reconciled trade vanishes
+    # from the broker without ever reaching the trade log, and its ticket would
+    # silently drop out of the spend/funnel. Terminal-only keeps stale
+    # non-terminal leftovers (old practice/mock states) from resurfacing —
+    # anything still active is visible via `names` anyway.
+    terminal = {aid for aid in registry.accounts
+                if states.get(aid) is not None
+                and states[aid].phase.value in ("passed", "blown", "retired")}
+    tracked = set(names) | set(log_ids) | terminal
 
     leaders = {"eval": 0, "funded": 0, "passed": 0, "blown_eval": 0,
                "blown_funded": 0, "retired": 0}

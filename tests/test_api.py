@@ -194,3 +194,114 @@ def test_snapshot_cache_hits_and_invalidates(monkeypatch):
     service.invalidate_snapshot_cache()
     assert service.build_snapshot(b, mode="mock") is not first    # rebuilt
     service.invalidate_snapshot_cache()
+
+
+# ---- payouts_taken override propagation (accounts tab + mirror update) ----
+
+def _funded_aid(client):
+    rows = client.get("/api/accounts").json()
+    return next(a["account_id"] for a in rows if a["phase"] == "funded")
+
+
+def test_override_payout_increment_records_everywhere(client):
+    """Raising 'Payouts taken' with record_payouts must behave exactly like the
+    Mark-payout button: ledger event (-> Analytics), cycle reset, re-enable."""
+    from tophat.store import trade_log
+    aid = _funded_aid(client)
+    client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "phase": "funded", "base_balance": 0, "equity": 4000.0,
+        "winning_days_this_cycle": 5, "payout_ready": True})
+    client.post(f"/api/accounts/{aid}/set-enabled", json={"enabled": False})
+    # simulate the edit form: full field set posted alongside the raise
+    r = client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "payouts_taken": 1, "record_payouts": True, "phase": "funded",
+        "winning_days_this_cycle": 5, "payout_ready": True,
+        "equity": 4000.0}).json()
+    assert r["payouts_recorded"] == 1
+    assert r["state"]["payouts_taken"] == 1
+    assert r["state"]["winning_days_this_cycle"] == 0   # cycle reset won
+    assert r["state"]["payout_ready"] is False
+    assert r["enabled"] is True                          # re-enabled for next cycle
+    evts = [e for e in trade_log.read_events()
+            if e.get("type") == "payout" and e.get("account_id") == aid]
+    assert len(evts) == 1
+    assert evts[0]["amount"] == 2000.0                   # min(cap, 4000/2)
+    assert evts[0]["via"] == "override"
+    banked = client.get("/api/analytics").json()["totals"]["payouts_banked"]
+    assert banked == 2000.0
+
+
+def test_override_payout_decrement_reverses_ledger(client):
+    from tophat.store import trade_log
+    aid = _funded_aid(client)
+    client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "phase": "funded", "base_balance": 0, "equity": 4000.0})
+    client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "payouts_taken": 1, "record_payouts": True})
+    r = client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "payouts_taken": 0}).json()
+    assert r["payouts_reversed"] == 1
+    assert r["state"]["payouts_taken"] == 0
+    amounts = [e["amount"] for e in trade_log.read_events()
+               if e.get("type") == "payout" and e.get("account_id") == aid]
+    assert sorted(amounts) == [-2000.0, 2000.0]
+    assert client.get("/api/analytics").json()["totals"]["payouts_banked"] == 0.0
+
+
+def test_override_without_flag_adopts_history_silently(client):
+    """Presets / adopting an account mid-lifecycle: raw counter set, no events."""
+    from tophat.store import trade_log
+    aid = _funded_aid(client)
+    r = client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "payouts_taken": 2, "winning_days_this_cycle": 3}).json()
+    assert r["payouts_recorded"] == 0
+    assert r["state"]["payouts_taken"] == 2
+    assert r["state"]["winning_days_this_cycle"] == 3    # NOT reset
+    assert not [e for e in trade_log.read_events() if e.get("type") == "payout"]
+
+
+def test_override_payout_retires_at_target(client):
+    aid = _funded_aid(client)
+    client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "phase": "funded", "base_balance": 0, "equity": 1000.0})
+    r = client.post(f"/api/accounts/{aid}/lifecycle", json={
+        "payouts_taken": 4, "record_payouts": True}).json()
+    assert r["payouts_recorded"] == 4
+    assert r["state"]["phase"] == "retired"
+
+
+def test_mirror_override_payout_full_semantics(client):
+    """Mirror payouts_taken raise with record_payouts == the Mark Paid button:
+    equity drop, ledger event, window reset, apex channel -> nuke."""
+    from tophat.store import trade_log
+    m = client.post("/api/mirrors", json={
+        "firm": "apex-50k", "account_number": "PA123", "phase": "funded"}).json()
+    mid = m["mirror_id"]
+    client.post(f"/api/mirrors/{mid}/update", json={
+        "equity": 3000.0, "win_days": 5, "channel": "flip"})
+    r = client.post(f"/api/mirrors/{mid}/update", json={
+        "payouts_taken": 1, "record_payouts": True}).json()
+    assert r["payouts_taken"] == 1
+    assert r["equity"] == 1500.0          # 3000 - min(request 1500, cap, equity)
+    assert r["win_days"] == 0
+    assert r["channel"] == "nuke"         # apex-gate cycle reopens on nuke
+    evts = [e for e in trade_log.read_events()
+            if e.get("type") == "payout" and e.get("mirror_id") == mid]
+    assert len(evts) == 1 and evts[0]["amount"] == 1500.0
+    # decrement reverses the ledger event
+    r2 = client.post(f"/api/mirrors/{mid}/update", json={"payouts_taken": 0}).json()
+    assert r2["payouts_taken"] == 0
+    amounts = [e["amount"] for e in trade_log.read_events()
+               if e.get("type") == "payout" and e.get("mirror_id") == mid]
+    assert sorted(amounts) == [-1500.0, 1500.0]
+
+
+def test_mirror_override_without_flag_is_raw(client):
+    from tophat.store import trade_log
+    m = client.post("/api/mirrors", json={
+        "firm": "lucid-50k", "account_number": "L1", "phase": "funded"}).json()
+    r = client.post(f"/api/mirrors/{m['mirror_id']}/update",
+                    json={"payouts_taken": 2}).json()
+    assert r["payouts_taken"] == 2
+    assert not [e for e in trade_log.read_events()
+                if e.get("type") == "payout" and e.get("mirror_id") == m["mirror_id"]]

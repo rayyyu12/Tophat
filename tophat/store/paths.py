@@ -16,6 +16,9 @@ SECRET_FILE = DATA_DIR / ".secret"
 MIRRORS_FILE = DATA_DIR / "mirrors.json"
 COPIER_PLANS_DIR = DATA_DIR / "copier_plans"
 TRADE_LOG_FILE = DATA_DIR / "trade_log.jsonl"
+# Write-through {account_id: broker name} cache, refreshed by build_snapshot so
+# offline tools (deploy/watchdog.py recap) can label accounts without auth.
+ACCOUNT_NAMES_FILE = DATA_DIR / "account_names.json"
 
 # Simulation page: templates + stored runs live with runtime state; the bar
 # cache is TICK-derived 1-second bars (built by export_sim_ticks.py from the

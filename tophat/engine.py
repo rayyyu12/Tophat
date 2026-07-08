@@ -42,7 +42,7 @@ class AccountConfig:
     eval_contracts: int = 5
     eval_target_dollars: float = 3_000.0
     eval_target_pts: float = 15.5
-    eval_stop_pts: float = 10.0          # = full $1,000 DLL at 5 minis (docs/STRATEGY.md §6.2)
+    eval_stop_pts: float = 10.5          # $1,050 = $1,000 DLL + ~$50 slippage overshoot (docs/STRATEGY.md §6.2)
     eval_min_days: int = 2
 
     # Funded sizing: nukes use the full funded size (reachable point target),
@@ -55,6 +55,10 @@ class AccountConfig:
 
     winning_days_required: int = 5
     payouts_target: int = 4
+    # Qualifying winning-day bar (NET day P&L). Topstep only counts a winning
+    # day at >= this net profit, so a scraped win below the bar must not advance
+    # the payout cycle. 0 disables the check (sims model full-target outcomes).
+    win_day_min: float = 0.0
 
     @property
     def floor_drop(self) -> float:

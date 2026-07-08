@@ -741,6 +741,7 @@
               </select></div>
             <div class="field"><label>Eval days traded</label><input id="f_days_traded" type="number" min="0"></div>
             <div class="field"><label>Payouts taken</label><input id="f_payouts_taken" type="number" min="0"></div>
+            <div class="check-row"><input type="checkbox" id="f_record_payouts" checked><label for="f_record_payouts">Record raises as real payouts (books in Analytics, resets the cycle) — untick when adopting existing history</label></div>
             <div class="field"><label>Winning days this cycle</label><input id="f_winning_days" type="number" min="0"></div>
             <div class="field"><label>Nuke tries this cycle</label><input id="f_nuke_tries" type="number" min="0"></div>
             <div class="check-row"><input type="checkbox" id="f_nuke_hit"><label for="f_nuke_hit">Nuke hit this cycle</label></div>
@@ -1351,6 +1352,7 @@ const SCHEMA=[
     ['funded_contracts','Nuke contracts (minis)'],['flip_contracts','Flip contracts (minis)'],
     ['nuke_target_dollars','Nuke target ($)'],['flip_target_dollars','Flip target ($)'],
     ['payout_cap','Payout cap ($)'],['winning_days_required','Winning days / payout'],
+    ['win_day_min','Qualifying win day min ($)'],
     ['payouts_target','Payouts then retire']]],
   ['secAuto',[
     ['nuke_entry_time',`Nuke entry time (${localTzAbbr()||'local'})`],
@@ -1507,6 +1509,7 @@ function fillAcctForm(acct){
   $('#f_peak').value = s.peak_equity_eod;
   $('#f_base').value = s.base_balance;
   $('#f_sync_balance').checked = false;
+  $('#f_record_payouts').checked = true;
   $('#acctPreset').value = '';
   $('#acctLifecyclePreview').textContent = acct.lifecycle;
   $('#acctBrokerStatus').innerHTML = `<span class="pill ${acct.can_trade?'active':'inactive'}">${acct.trading_status}</span> · broker API ${acct.broker_can_trade?'canTrade':'no trade'} · ${fmtUsd(acct.balance)}`;
@@ -1542,6 +1545,9 @@ $('#acctPick').onchange = onAcctPick;
 $('#acctPreset').onchange = ()=>{
   const p = PRESETS[$('#acctPreset').value];
   if(!p || !ACCT_CUR) return;
+  // Presets describe an account's EXISTING history (adoption) — applying one
+  // must never book payout events into Analytics.
+  $('#f_record_payouts').checked = false;
   if(p.phase) $('#f_phase').value = p.phase;
   if(p.days_traded != null) $('#f_days_traded').value = p.days_traded;
   if(p.payouts_taken != null) $('#f_payouts_taken').value = p.payouts_taken;
@@ -1572,10 +1578,14 @@ $('#btnSaveAcct').onclick = async()=>{
     peak_equity_eod: parseFloat($('#f_peak').value),
     base_balance: parseFloat($('#f_base').value),
     sync_balance: $('#f_sync_balance').checked,
+    record_payouts: $('#f_record_payouts').checked,
   };
-  await jfetch(`/api/accounts/${ACCT_CUR.account_id}/lifecycle`, {
-    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)});
-  toast('Account saved');
+  const r = await (await jfetch(`/api/accounts/${ACCT_CUR.account_id}/lifecycle`, {
+    method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(patch)})).json();
+  if(r.error){ toast(r.error); return; }
+  toast(r.payouts_recorded ? `Account saved · ${r.payouts_recorded} payout${r.payouts_recorded===1?'':'s'} recorded`
+        : r.payouts_reversed ? `Account saved · ${r.payouts_reversed} payout${r.payouts_reversed===1?'':'s'} reversed`
+        : 'Account saved');
   await loadAccountsPage();
   refresh();
 };

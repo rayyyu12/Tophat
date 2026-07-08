@@ -9,7 +9,11 @@ auto-withdrawing (money movement is always a manual operator step).
 
 from __future__ import annotations
 
+import logging
+
 from tophat.engine import AccountConfig, AccountState, Phase, TradePlan, account_base, is_dead
+
+log = logging.getLogger("tophat.lifecycle")  # [debuglog]
 
 
 def record_pending(state: AccountState, plan: TradePlan, entry_balance: float,
@@ -47,7 +51,7 @@ def reconcile(cfg: AccountConfig, state: AccountState, current_balance: float,
     if state.phase == Phase.EVAL:
         _advance_eval(cfg, state, outcome, current_balance)
     else:
-        _advance_funded(cfg, state, label, outcome)
+        _advance_funded(cfg, state, label, outcome, delta)
 
     state.equity = current_balance
     state.peak_equity_eod = max(state.peak_equity_eod, current_balance)
@@ -62,9 +66,18 @@ def reconcile(cfg: AccountConfig, state: AccountState, current_balance: float,
     return outcome
 
 
-def _advance_funded(cfg: AccountConfig, state: AccountState, label: str, outcome: str) -> None:
+def _advance_funded(cfg: AccountConfig, state: AccountState, label: str, outcome: str,
+                    delta: float | None = None) -> None:
     state.days_traded += 1
     won = outcome == "win"
+    # A win must also clear the firm's qualifying winning-day bar (Topstep: net
+    # >= $150/day) to advance the payout cycle — mirrors advance_mirror's check.
+    # delta=None (older callers) or win_day_min=0 skips the bar.
+    qualifies = won and (delta is None or cfg.win_day_min <= 0
+                         or delta >= cfg.win_day_min - 1e-9)
+    if won and not qualifies:
+        log.warning("win netted $%.2f < $%.2f qualifying bar - NOT counted as a "
+                    "winning day", delta, cfg.win_day_min)
     # Note: no locked_out_today here — reconcile runs on the *next* day's pass, so
     # yesterday's loss must not block today. Same-day double-fire is prevented by
     # last_fire_date in the scheduler.
@@ -72,10 +85,11 @@ def _advance_funded(cfg: AccountConfig, state: AccountState, label: str, outcome
         state.nuke_tries_this_cycle += 1
         if won:
             state.nuke_hit_this_cycle = True
-            state.winning_days_this_cycle += 1
+            if qualifies:
+                state.winning_days_this_cycle += 1
         # 'loss'/'flat' nuke: no winning day; decide() routes the next try to recovery
     else:  # flip
-        if won:
+        if qualifies:
             state.winning_days_this_cycle += 1
     if state.winning_days_this_cycle >= cfg.winning_days_required:
         state.payout_ready = True   # awaits manual withdrawal -> mark_payout_taken()

@@ -271,7 +271,7 @@ def _run_path(rng: np.random.Generator, views: list[DayView], memo: _OutcomeMemo
                     if st.phase == Phase.EVAL:
                         _advance_eval(cfg, st, outcome, new_balance)
                     else:
-                        _advance_funded(cfg, st, plan.label, outcome)
+                        _advance_funded(cfg, st, plan.label, outcome, delta)
                     st.equity = new_balance
                     st.peak_equity_eod = max(st.peak_equity_eod, st.equity)
                     if (st.phase in (Phase.EVAL, Phase.FUNDED)

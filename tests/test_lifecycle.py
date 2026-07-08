@@ -107,3 +107,31 @@ def test_eval_pass_sets_passed():
     record_pending(st, d.plan, 51_550, "d2", CFG.point_value)
     start_new_day(st); reconcile(CFG, st, 53_100, True)        # day2 -> >= +3,000
     assert st.phase == Phase.PASSED
+
+
+def test_flip_win_below_qualifying_bar_does_not_count():
+    """A classified win under the firm's net winning-day bar (Topstep $150) must
+    not advance the payout cycle — mirrors advance_mirror's qualifying check."""
+    cfg = AccountConfig(win_day_min=150.0)
+    st = funded(payouts_taken=1)          # flip-only cycle
+    place(cfg, st)
+    assert st.pending_label == "flip"
+    out = reconcile(cfg, st, st.equity + 100.0, position_flat=True)
+    assert out == "win"                   # >= half target -> classified win
+    assert st.winning_days_this_cycle == 0  # ...but not a qualifying day
+
+
+def test_flip_win_at_qualifying_bar_counts():
+    cfg = AccountConfig(win_day_min=150.0)
+    st = funded(payouts_taken=1)
+    place(cfg, st)
+    out = reconcile(cfg, st, st.equity + 160.0, position_flat=True)
+    assert out == "win"
+    assert st.winning_days_this_cycle == 1
+
+
+def test_bar_disabled_keeps_legacy_behavior():
+    st = funded(payouts_taken=1)
+    place(CFG, st)                        # CFG.win_day_min == 0 -> bar off
+    reconcile(CFG, st, st.equity + 100.0, position_flat=True)
+    assert st.winning_days_this_cycle == 1

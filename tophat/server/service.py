@@ -7,6 +7,7 @@ scheduler + hedge-guard. Broker is pluggable (mock by default; ProjectX live).
 from __future__ import annotations
 
 import copy
+import json
 import logging
 import os
 import threading
@@ -223,6 +224,16 @@ def _side(direction: int) -> str:
     return "LONG" if direction == 1 else "SHORT" if direction == -1 else "FLAT"
 
 
+def drive_public() -> dict:
+    """Today's locked drive for the unauthenticated healthz endpoint. Cache-only:
+    never touches a broker, returns locked=False until the 09:45 ET read lands."""
+    today = datetime.now(ET).strftime("%Y-%m-%d")
+    if _DRIVE_CACHE["date"] == today and _DRIVE_CACHE["value"]:
+        return {"drive": _side(_DRIVE_CACHE["value"]),
+                "drive_source": _DRIVE_CACHE["src"], "locked": True}
+    return {"drive": "", "drive_source": "", "locked": False}
+
+
 def _plus_minutes(hhmm: str, minutes: int) -> str:
     """'09:45' + 10 -> '09:55' (same-day wraparound clamped mod 24h)."""
     try:
@@ -311,7 +322,41 @@ def build_snapshot(broker, *, mode: str, force: bool = False,
         # would pin pre-mutation rows for a full TTL. Serve it, don't cache it.
         if _SNAP_GEN == gen0:
             _SNAPSHOT_CACHE[ck] = {"ts": time.monotonic(), "data": snap, "mode": mode}
+        _persist_account_names(ck, snap)
         return snap
+
+
+_NAMES_WRITTEN: dict[str, dict[str, str]] = {}
+_NAMES_LOCK = threading.Lock()
+
+
+def _persist_account_names(ck: str, snap: dict) -> None:
+    """Write-through {account_id: broker name} beside the state files so offline
+    tools (deploy/watchdog.py recap) can label accounts without auth or broker
+    calls. Merges across credentials; only touches disk when a name changed.
+    Best-effort — a cache write must never break a snapshot."""
+    try:
+        names = {str(r["account_id"]): (r.get("broker_name") or r.get("name") or "")
+                 for r in snap.get("accounts", [])}
+        names = {k: v for k, v in names.items() if v}
+        if not names or _NAMES_WRITTEN.get(ck) == names:
+            return
+        from tophat.store.atomic import atomic_write_text
+        from tophat.store.paths import ACCOUNT_NAMES_FILE
+        with _NAMES_LOCK:
+            path = tenant.resolve(ACCOUNT_NAMES_FILE)
+            try:
+                merged = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                merged = {}
+            if all(merged.get(k) == v for k, v in names.items()):
+                _NAMES_WRITTEN[ck] = names
+                return
+            merged.update(names)
+            atomic_write_text(path, json.dumps(merged, indent=1, sort_keys=True))
+            _NAMES_WRITTEN[ck] = names
+    except Exception:
+        pass
 
 
 def _build_snapshot(broker, *, mode: str, owner: str = "",
@@ -1023,6 +1068,26 @@ _LIFECYCLE_FIELDS = {
 _REGISTRY_FIELDS = {"alias", "notes", "enabled", "force_inactive"}
 
 
+def _reverse_recent_payout_events(n: int, **match) -> int:
+    """Append negation events for the `n` most recent un-reversed payout events
+    matching `match` (account_id=…/mirror_id=… plus source). Keeps Analytics'
+    banked total truthful after a downward payouts_taken correction without
+    rewriting the append-only ledger. Returns how many events were reversed."""
+    events = [e for e in trade_log.read_events() if e.get("type") == "payout"
+              and all(e.get(k) == v for k, v in match.items())]
+    pos = [e for e in events if float(e.get("amount") or 0.0) > 0]
+    already = sum(1 for e in events if float(e.get("amount") or 0.0) < 0)
+    avail = pos[:-already] if already else pos
+    take = avail[-n:] if n > 0 else []
+    for src in reversed(take):
+        trade_log.log_event(
+            "payout", **match, estimated=bool(src.get("estimated")),
+            via="override-correction",
+            amount=-float(src.get("amount") or 0.0),
+            payout_number=src.get("payout_number"))
+    return len(take)
+
+
 def list_accounts_detail(pool: list[BrokerHandle]) -> list[dict]:
     """Full account rows for the edit-accounts page, unioned across every credential."""
     # Build snapshots first — that's what creates+persists state for new accounts —
@@ -1073,14 +1138,14 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         _init_state(st, cfg, accounts[account_id])
 
     for key in _LIFECYCLE_FIELDS:
-        if key not in patch:
-            continue
+        if key not in patch or key == "payouts_taken":
+            continue   # payouts_taken is applied LAST (below) with real semantics
         val = patch[key]
         if key == "phase":
             st.phase = Phase(str(val))
         elif key in ("nuke_hit_this_cycle", "payout_ready", "locked_out_today"):
             setattr(st, key, bool(val))
-        elif key in ("days_traded", "payouts_taken", "winning_days_this_cycle",
+        elif key in ("days_traded", "winning_days_this_cycle",
                      "nuke_tries_this_cycle"):
             setattr(st, key, int(val))
         else:
@@ -1113,6 +1178,35 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
         st.equity = bal
         st.peak_equity_eod = max(st.peak_equity_eod, bal)
 
+    # payouts_taken goes last so its side effects win over the (stale) cycle
+    # fields the edit form always posts alongside it.
+    payouts_recorded = payouts_reversed = 0
+    if "payouts_taken" in patch:
+        target = int(patch["payouts_taken"])
+        if target > st.payouts_taken and patch.get("record_payouts"):
+            # Operator recorded real withdrawals through the edit form: full
+            # payout semantics per increment — identical to mark_payout(), so
+            # Analytics, cycle resets, retirement and re-enable all follow.
+            while st.payouts_taken < target:
+                mark_payout_taken(cfg, st)
+                trade_log.log_event(
+                    "payout", account_id=account_id, source="leader",
+                    estimated=True, via="override",
+                    amount=round(min(cfg.payout_cap, max(st.equity / 2.0, 0.0)), 2),
+                    payout_number=st.payouts_taken)
+                payouts_recorded += 1
+            if st.phase != Phase.RETIRED and not entry.enabled:
+                entry.enabled = True        # resumes next cycle, same as mark_payout()
+                entry.enabled_at = time.time()
+        else:
+            # Adoption/preset path (raise without record_payouts) or a downward
+            # correction: set the counter verbatim. A decrement also reverses
+            # the most recent logged payout event(s) so Analytics stays truthful.
+            if target < st.payouts_taken:
+                payouts_reversed = _reverse_recent_payout_events(
+                    st.payouts_taken - target, account_id=account_id, source="leader")
+            st.payouts_taken = target
+
     merge_save(states, [account_id])
     # Re-apply this account's (patched) registry entry over a fresh load, so we
     # only write the one entry we own and can't clobber concurrent edits.
@@ -1126,6 +1220,8 @@ def update_account_lifecycle(account_id: int, patch: dict, pool: list[BrokerHand
     return {
         "account_id": account_id,
         "ok": True,
+        "payouts_recorded": payouts_recorded,
+        "payouts_reversed": payouts_reversed,
         "lifecycle": ("practice" if is_practice(a.name)
                       else lifecycle_label(cfg, st, can_trade=eff)),
         "state": state_to_dict(st),

@@ -30,7 +30,7 @@ from tophat.store.config import load_settings, update_settings
 from tophat.store.firms import FIRMS, FOLLOWER_FIRMS
 
 STATIC_DIR = Path(__file__).parent / "static"
-PUBLIC_PATHS = {"/login", "/api/login"}
+PUBLIC_PATHS = {"/login", "/api/login", "/api/healthz"}
 SECURE_COOKIES = os.getenv("TOPHAT_HTTPS", "").lower() in ("1", "true", "yes")
 # How often the WS pushes a snapshot to the UI. Cheap: build_snapshot is cached
 # (SNAPSHOT_TTL), so a fast UI cadence does NOT mean a fast broker poll cadence.
@@ -139,6 +139,12 @@ def create_app() -> FastAPI:
         resp = JSONResponse({"ok": True})
         resp.delete_cookie(auth.COOKIE_NAME, path="/", samesite="lax", secure=SECURE_COOKIES)
         return resp
+
+    @app.get("/api/healthz")
+    def healthz():
+        """Unauthenticated liveness + today's locked drive (process-global cache,
+        no tenant data, no broker calls) — consumed by deploy/premarket_sentinel.py."""
+        return {"ok": True, **service.drive_public()}
 
     @app.get("/login")
     def login_page():
@@ -261,12 +267,34 @@ def create_app() -> FastAPI:
         from datetime import datetime
         from zoneinfo import ZoneInfo
         today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        # payouts_taken is handled after the rest of the patch (so an equity
+        # sync in the same call lands first) and with real payout semantics:
+        # raises with record_payouts book through mark_mirror_payout (ledger,
+        # window reset, apex channel -> nuke, retire); drops reverse the most
+        # recent ledger event(s); raises without the flag adopt history as-is.
+        body = dict(body or {})
+        record = bool(body.pop("record_payouts", False))
+        target = body.pop("payouts_taken", None)
         try:
-            m = mirrors_store.patch_mirror(mirror_id, body or {}, today=today)
+            m = mirrors_store.patch_mirror(mirror_id, body, today=today)
         except ValueError as exc:
             return JSONResponse({"error": str(exc)}, status_code=400)
         if m is None:
             return JSONResponse({"error": "unknown mirror"}, status_code=404)
+        if target is not None:
+            target = int(target)
+            if target > m.payouts_taken and record:
+                while m is not None and m.payouts_taken < target:
+                    m = mirrors_store.with_mirror(
+                        mirror_id, mirror_sync.mark_mirror_payout)
+            elif target < m.payouts_taken:
+                service._reverse_recent_payout_events(
+                    m.payouts_taken - target, mirror_id=mirror_id, source="mirror")
+                m = mirrors_store.patch_mirror(
+                    mirror_id, {"payouts_taken": target}, today=today)
+            elif target != m.payouts_taken:
+                m = mirrors_store.patch_mirror(
+                    mirror_id, {"payouts_taken": target}, today=today)
         return mirror_sync.public_view(m)
 
     @app.delete("/api/mirrors/{mirror_id}")

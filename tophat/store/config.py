@@ -27,7 +27,7 @@ class TopHatSettings:
     eval_contracts: int = 5
     eval_target_dollars: float = 3_000.0
     eval_target_pts: float = 15.5
-    eval_stop_pts: float = 10.0         # = full $1,000 DLL at 5 minis (docs/STRATEGY.md §6.2)
+    eval_stop_pts: float = 10.5         # $1,050: DLL + ~$50 slippage cushion so a red day books >= the full $1,000
     eval_min_days: int = 2
 
     funded_contracts: int = 2          # nukes
@@ -37,6 +37,7 @@ class TopHatSettings:
     payout_cap: float = 2_000.0
     winning_days_required: int = 5
     payouts_target: int = 4
+    win_day_min: float = 150.0         # Topstep qualifying winning-day bar (NET $)
 
     # --- automation ---
     nuke_entry_time: str = "09:45"     # ET; drive locks here
