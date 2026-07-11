@@ -1,6 +1,74 @@
 # Tradecopia DB Automation — Implementation Plan
 
-**Status: PLANNED (no code yet). Written 2026-07-06.**
+**Status: STAGES 0–1 BUILT (2026-07-08). Written 2026-07-06.**
+
+> ## Status log — 2026-07-08
+>
+> The bridge service is named **TopHat Rabbit** (`rabbit/` in this repo;
+> operator-chosen, supersedes "copier-sync"/"tc-agent" everywhere below).
+>
+> - **Stage 0 complete** → `rabbit/fixtures.md`. Corrections to §3 landed
+>   there (association pks are app-assigned accounts.id on AUTOINCREMENT
+>   columns; `replication_disable_reason` column exists; leader rows carry
+>   entity_id+account_name; live groups flags are (0,1,1,1) not all-1s).
+>   The app log is encrypted → verify waits `boot_wait_s` instead of log
+>   markers. **Operator sign-off of fixtures.md still pending.**
+> - **Stage 1 complete**: writer engine `rabbit/tc_apply.py` (+14 tests in
+>   `tests/test_tc_apply.py`: golden diffs, guards, idempotency, mid-txn
+>   crash, verify-fail rollback), exporter `tophat/services/tc_export.py`
+>   (+tests), box-token pairing `tophat/store/boxes.py` + Settings → "Copier
+>   boxes" UI, endpoints `GET /api/ops/tc-desired` / `POST /api/ops/tc-status`
+>   (bearer-token authed, tenant-bound, Discord notify on non-noop results),
+>   and the service loop `rabbit/rabbit.py`.
+> - **Cadence (operator-designed 2026-07-08, supersedes both the nightly
+>   one-shot and the first 24/7 heavy-poll draft):** Rabbit runs 24/7 but
+>   applies on **one scheduled pull per day** (`apply_at`, default 22:30 ET —
+>   after activations/purchases are done, and clear of TopHat's 22:00 OCO
+>   probe so the two never share a log minute), with **retries** every 15 min
+>   (max 8) while TopHat answers 409 (plan not applied / data incomplete).
+>   Exhausting the retries is LOUD (2026-07-09): Rabbit pushes a `gave-up`
+>   status that TopHat fans to Discord — a silent skip would leave Tradecopia
+>   running yesterday's mapping all the next day.
+>   In between it polls only `GET /api/ops/tc-poll` (a ~30-byte flag) every
+>   60 s, which is what makes two triggers land within a minute: the
+>   Settings **"Sync now"** button, and the automatic flag TopHat sets on
+>   **"Mark applied"** — that second one closes the date-rollover gap (the
+>   apex nuke rotation is date-keyed, so the morning confirm re-syncs the
+>   box without anyone touching it). Writes always refuse inside the
+>   **market-hours blackout** (09:30–16:10 ET, config) whatever the trigger;
+>   the §7.1 narrow morning window is retired in favor of blackout +
+>   positions flat-guard.
+> - **§5.1 contract amendment (v2):** the `guard` block (goose version +
+>   Tradecopia user id) moved into the box's `rabbit_config.json` — they are
+>   per-host facts a hosted TopHat cannot know. The payload carries `tenant`
+>   instead (tenant-keyed from day one per §12.2).
+> - **Guard addition:** preflight also aborts if `positions.net_pos != 0`
+>   for any touched account (belt-and-braces flatness check).
+> - **§13 reverse sync: R1 BUILT (2026-07-08)** — reader
+>   `tc_apply.read_observed` (SELECT-only, rides every cycle + standalone
+>   `rabbit.py observe`), importer `tophat/services/tc_observe.py`
+>   (freshness gate 36 h, `MirrorAccount.start_balance` anchor with
+>   fresh-phase auto-capture, onboarding proposals never auto-created),
+>   endpoints `POST /api/ops/tc-observed` + `GET /api/ops/tc-observed/last`,
+>   summary line folded into the Rabbit status (§13.8) and shown in
+>   Settings → Copier boxes. Deviations from the sketch, on purpose:
+>   observations live in the per-tenant snapshot file, not as new mirror
+>   fields (`last_day_pnl` feeds the solver and must not have two writers);
+>   the reader payload adds `entity_organization` for firm inference.
+>   **R2 (supervised live pull) pending** — needs the live follower fleet
+>   connected in Tradecopia.
+> - **Idle guards (operator 2026-07-08):** three independent layers keep a
+>   leader-only (no-copy-trading) stretch silent. (1) No box paired → no
+>   token exists → nothing anywhere makes a call (pull-only architecture).
+>   (2) Exporter refuses (409 "copy trading is idle") while there are no
+>   enabled, non-terminal mirrors — a running Rabbit never churns the app
+>   to apply an empty world. Mirrors that exist but are deliberately
+>   unmapped still export `groups: []` (unmap-all stays possible).
+>   (3) Settings master switch `copier_sync_enabled=false` → every pull
+>   gets 409 "disabled in Settings", boxes stay paired but inert.
+> - **Next: Stage 2 (Gate A)** — supervised run on throwaway accounts, §9.2
+>   checklist + the §11.4 auto-login test, operator present. Then Stage 3
+>   supervised dailies. Reverse-sync R2 can ride the same session.
 **Goal:** eliminate the ~10-min/day manual Tradecopia edit session. TopHat already
 computes the daily copier plan (docs/MULTI_FIRM_PLAN.md §5); this plan makes a
 machine apply it to Tradecopia by writing its SQLite DB while the app is closed,
@@ -515,6 +583,21 @@ shared-instance trust/ToS question answered by the operator. The only thing to
 do *now* is what §12.2 already fixed: keep every new contract field
 tenant-aware so nothing has to be redesigned.
 
+### 12.35 Operations page rework — NEXT STEP after the integration lands
+
+Operator decision 2026-07-08, explicitly **not** this build's priority: once
+Rabbit is applying plans (Stage 3+), the Operations tab stops being a to-do
+list of edits the operator must make in Tradecopia and becomes an
+**informational overview of what will happen / just happened automatically**:
+
+- tonight's desired arrangement (the last `tc_desired` export) instead of
+  imperative "MAP/UNMAP" instructions;
+- the last apply result per box (`tc_apply_status` + Copier-boxes check-ins)
+  — applied/noop/aborted/rolled_back, row counts, timestamps;
+- keep the payout queue / buy list / hazards (still human actions);
+- "Mark applied" likely becomes automatic on an `applied` status (the §9.4
+  Stage-4 option) — decide when reworking.
+
 ### 12.4 Discord reporting (live today, grows with the stages)
 
 - **Now**: the Watchdog posts a pre-market warning (09:00 + 09:25 ET checks,
@@ -524,3 +607,314 @@ tenant-aware so nothing has to be redesigned.
   rolled_back + row counts) to the same webhook after every nightly run.
 - **Stage 4**: any non-applied/noop result and any intraday
   `entities.is_connected` flip during 09:00–16:00 ET page the operator.
+
+---
+
+## 13. Reverse sync — observed state (Tradecopia DB → TopHat)
+
+**Status: PLANNED (no code yet). Written 2026-07-08.**
+
+Everything above is one-directional: TopHat computes the copier plan, tc-apply
+writes it into Tradecopia. This section adds the **other direction** — a
+**read-only** pull of live account facts *out* of the same DB and back into
+TopHat. It exists because **there is no API for the follower firms (Lucid, Apex,
+Tradeify)**; their accounts live only inside a broker platform that Tradecopia
+connects to, and Tradecopia persists what it polls. Its SQLite file is therefore
+the only machine-readable source of a follower's **balance** and **name** on the
+whole host. The reverse sync turns that file into TopHat's follower-side
+equivalent of the API-fed leader snapshot.
+
+### 13.0 Verdict and evidence (why this is worth doing)
+
+A read of the live DB on 2026-07-08 (read-only copy, app untouched) established
+that `accounts` is a full per-account state row, not just copier wiring:
+
+| Column (`accounts`) | Live example | What it gives TopHat |
+|---|---|---|
+| `name` | `PAAPEX363570000064`, `50KTC-V2-DLL-14624-20981325` | the firm's real account id → **auto-onboarding**, no manual entry |
+| `balance` | `50237.0`, `141437.93` | the account's **real balance** (absolute $) |
+| `realized_pn_l` | `0.0` | booked **day** P&L |
+| `week_realized_pn_l` | `0.0` | booked **week** P&L (Apex consistency window) |
+| `entity_id` | `APEX_36357-demo` | which broker login / firm |
+| `updated_at` | `2026-07-07 06:52` | **freshness stamp** (see 13.1) |
+| `is_hidden` | `0` | operator-hidden accounts to skip |
+
+Corroborating tables (present, deeper detail, **not** required for v1):
+`cash_balances` (point-in-time snapshots incl. `amount_sod` = start-of-day
+balance), `cash_balance_logs` (per-fill ledger: `delta`, `cash_change_type` ∈
+{`Commission`,`TradePaired`,`NewSession`}, `trade_date`), `positions` /
+`position_logs` (live net position, symbol, realized/unrealized P&L).
+
+**This mechanism is proven, not hypothetical**: the six May-29 Apex demo
+followers carry real `balance` rows (`50422.1`, `50356.4`) written by the same
+`feeds.connection_type='balance_polling'` (2 s interval) that runs for *every*
+account regardless of entity — leader or follower. The reverse sync is a
+`SELECT`; it adds no new failure mode to the write path.
+
+**Verdict: build it, and it can ship before the writer.** The observe path is
+pure read against the same DB snapshot §7.1 already takes; it delivers value
+(auto balances + auto onboarding) even if the DB-write half of this plan is never
+turned on.
+
+### 13.1 The governing caveat — freshness equals connection uptime
+
+Tradecopia's balance is only as fresh as its last **connected** poll. The live
+DB shows this in one glance — two clusters, same schema:
+
+- Topstep accounts: `updated_at = 2026-07-07 06:52` (last connected session).
+- Apex followers: `updated_at = 2026-05-29` — **six weeks stale**.
+
+At read time **both** entities were `is_connected = 0` and every
+`feeds.connection_status = 'disconnected'`. The number never goes *wrong* — it
+freezes, and `updated_at` stops advancing, exactly per the §11 Tradovate
+80-minute-token lifecycle. Consequences that shape the whole design:
+
+1. This is a **"balance as of `updated_at`"** feed, never a real-time one — which
+   matches the intended **once-per-day** cadence and the nightly quit→relaunch
+   window when the connection is known-good.
+2. `updated_at` (and the `is_connected` join) **must** travel with every value
+   all the way to the TopHat UI. The importer treats stale rows as *observations
+   to display*, not *balances to book* (freshness gate, 13.4).
+3. The only follower balances in the DB today are the stale demo Apex rows; the
+   **live follower fleet is not yet onboarded** in Tradecopia (recon: the topstep
+   entity is on `rizzbizzy786` with old accounts, the live fleet is on
+   `rayyyu12`). The pipe is proven; live follower data appears once those
+   accounts are connected in-app.
+4. Leader (Topstep) balances are **already** authoritative in TopHat via the
+   ProjectX API (`service.account_names_and_balances`). The reverse sync's unique
+   value is the **followers** — so it may skip leader-entity accounts entirely
+   (13.5).
+
+### 13.2 Scope
+
+**In scope**
+- Read-only extraction of `accounts` (name, balance, day/week P&L, entity,
+  freshness) plus the `entities.is_connected`/`status` join, for **follower**
+  accounts, once per day (or on demand).
+- Importing balances into the existing mirror bookkeeping via the same code path
+  as a manual dashboard sync.
+- Surfacing **unknown** follower accounts to the operator as one-click onboarding
+  proposals.
+
+**Out of scope — the reader must refuse, not attempt**
+- Any write to the Tradecopia DB (this whole section is `SELECT`-only).
+- Reading `entities.auth_token`, `auth_token_expiry`, or any `*_key` /
+  credential file (same hard rule as §7).
+- **Auto-creating** mirrors silently. Unknown accounts are *proposed*; the
+  operator confirms (13.6). A wrong auto-create pollutes the fleet model.
+- Trusting `account_risk_configs` as firm rules: those rows are
+  `*_source = 'tradecopia'` (Tradecopia's own guardrails), **not** the firm's
+  real drawdown rules. TopHat's `FirmProfile` (`tophat/store/firms.py`) stays the
+  sole authority on firm accounting.
+- Rewriting booked history from `cash_balance_logs` (a future option, not v1).
+
+### 13.3 File contract — `tc_observed_state.json` (tc-apply → TopHat)
+
+Declarative snapshot of what Tradecopia currently believes, keyed by **account
+name**. Symmetric with §5; the box `POST`s this to TopHat (13.7).
+
+```json
+{
+  "version": 1,
+  "generated_at": "2026-07-08T08:05:00-04:00",
+  "tenant": "<uid>",
+  "guard": {
+    "goose_version": 20260521000000,
+    "user_id": "9931744e-779b-4bdf-8782-1a0eebedc2ac"
+  },
+  "accounts": [
+    {
+      "name": "PAAPEX363570000064",
+      "entity_id": "APEX_36357-demo",
+      "entity_type": "demo",
+      "connected": false,
+      "balance": 50356.4,
+      "realized_pnl": 0.0,
+      "week_realized_pnl": 0.0,
+      "balance_sod": 50356.4,
+      "updated_at": "2026-05-29T22:19:47Z"
+    }
+  ]
+}
+```
+
+Semantics:
+- One entry per non-hidden `accounts` row the reader is configured to report
+  (13.5). Values are copied verbatim from the DB; **no interpretation on the box
+  side** — TopHat owns all policy.
+- **Built 2026-07-09, beyond the sketch:** the payload also carries `groups` —
+  the live copier topology, verbatim (`[{group, status, leader, followers:
+  [{account, scale, replicate, contract_type}]}]`, followers sorted by account,
+  groups by leader). Leader names appear here even though leader *accounts* are
+  filtered from `accounts` (13.5). The server stores it in `tc_observed.json`
+  and the Operations page renders it as the "Tradecopia — live mapping" table,
+  badging each follower with what the next sync will do to it. Additionally the
+  box's flag poll became `GET /api/ops/tc-poll?apply_at=HH:MM` so TopHat can
+  display the nightly apply schedule (a box-config fact) without guessing.
+- `updated_at` is `accounts.updated_at` (the freshness stamp). `connected` is the
+  joined `entities.is_connected` for the row's `entity_id`.
+- Same guard block as §5.1: schema version + sole `user_id`. Mismatch → the box
+  emits an error status and sends **no** accounts (never a partial/guessed pull).
+- `tenant` is carried from day one (§12.2), so a shared instance can fan the pull
+  out per tenant without a rewrite.
+- The wire body **is** the file: a host can pull it by hand and import it via the
+  TopHat UI, air-gapped.
+
+### 13.4 TopHat-side importer (this repo) — the mapping
+
+New self-contained service in `tophat/services/` (proposed `tc_observe.py`),
+touching no trading paths. For each observed account:
+
+1. **Match by name.** `accounts.name` → the mirror whose `account_number` equals
+   it, exactly (mirrors store the firm's real id in `account_number`). Zero
+   matches → onboarding candidate (13.6). Multiple → error (never guess).
+2. **Freshness gate.** Apply the balance only if the observation is *newer than
+   what TopHat already has and recent enough to trust*:
+   `observed.updated_at > mirror.last_verified` **and** age ≤ configured window
+   (default **36 h**). Otherwise store the observation for display but do **not**
+   book it. This prevents a six-week-stale row from resetting a mirror.
+3. **Convert absolute → profit-relative.** TopHat's mirror equity is *dollars
+   above the account's starting balance* (`mirrors.py` docstring), so a raw
+   balance is not equity. See 13.4.1 — this is the one real subtlety.
+4. **Book via the existing path.** Feed the derived equity through the same
+   mechanism as a manual sync (`store.mirrors.patch_mirror(mid,
+   {"sync_balance": equity}, today=…)`), which sets `equity`, bumps
+   `peak = max(peak, equity)`, and stamps `last_verified`. The reverse sync is
+   simply an *automated* dashboard sync — no new bookkeeping semantics. Also
+   record `updated_at`/`connected` on the mirror for the staleness badge.
+
+Column → field mapping:
+
+| Tradecopia | TopHat mirror | Notes |
+|---|---|---|
+| `accounts.name` | `account_number` (match key) | exact string; also autofill on onboarding |
+| `accounts.balance` | `equity` (via 13.4.1 anchor) | authoritative correction of inferred drift |
+| `accounts.realized_pn_l` | `last_day_pnl` (informational) | direct booked day P&L |
+| `accounts.week_realized_pn_l` | (window tracking, info) | Apex consistency cross-check |
+| `accounts.updated_at` | `last_verified` + staleness badge | freshness stamp, gates the apply |
+| `entities.is_connected` | staleness/health flag | shown, not booked |
+
+#### 13.4.1 The equity-anchor subtlety (do not skip)
+
+Mirror equity is profit-relative and the zero-point differs by phase:
+**eval accounts start at $50k, funded accounts start at $0** (`mirrors.py`
+header). So `equity = balance − start_anchor`, where `start_anchor` is **not a
+single constant**:
+
+- Eval 50k account, Tradecopia `balance = 50,237` → equity `= +237`.
+- Funded account whose firm accounting reset → the anchor is the balance at the
+  moment funding began, not $50k.
+
+Therefore the mirror needs a **stored absolute anchor** captured once, at the
+start of each phase (onboarding, and again at eval→funded activation). Recommended:
+add `start_balance: float` to `MirrorAccount`, set it from the first observed
+Tradecopia balance for that phase (or operator-entered), and compute
+`equity = observed.balance − start_balance` thereafter. Absent an anchor, the
+importer must **refuse to book** that account (surface "needs anchor") rather
+than assume $50k — an assumed anchor silently corrupts the trailing floor. TC's
+`realized_pn_l` / `week_realized_pn_l` are anchor-free and can feed day/week
+displays immediately, independent of the equity conversion.
+
+### 13.5 Which accounts the reader reports
+
+- **Followers only by default.** Skip rows whose `entity_id` belongs to a
+  ProjectX/Topstep (leader) entity — TopHat already has those live via API, and
+  double-sourcing invites drift. Configurable, in case the operator wants TC as a
+  cross-check on leader balances too.
+- Skip `is_hidden = 1`.
+- Report **stale** followers anyway (the six May-29 rows) — staleness is
+  information the Operations page should show, not a reason to drop the row.
+
+### 13.6 Auto-onboarding proposals (the second win)
+
+Today `account_number` is operator-typed when a new account is bought. Instead:
+an observed `accounts.name` that matches **no** mirror and sits on a follower
+entity becomes a **proposed onboarding** on the Operations page — firm inferred
+from `entity_id` / name prefix (recon: Apex funded = `PA…`, eval = `APEX…`),
+`account_number` and `alias` pre-filled. One operator click →
+`store.mirrors.create_mirror(firm, account_number=…, alias=…)`. **Never
+auto-created**: a mis-inferred firm or a stray demo account would poison the
+fleet model and the copier plan built from it.
+
+### 13.7 How it rides the existing agent (no new infrastructure)
+
+The reverse sync is one more mode on the same `copier-sync` box process and the
+same box↔TopHat channel from §12.1 — no new host, port, or trust boundary:
+
+```
+TopHat  ──GET  /api/ops/tc-desired ──▶ copier-sync ──writes DB──▶ (§7 writer)
+TopHat  ◀─POST /api/ops/tc-observed ── copier-sync ──reads  DB──▶ (§13 reader)
+```
+
+- New CLI mode `tc-apply observe` (read-only): open DB read-only, run the guard
+  check, emit `tc_observed_state.json`, `POST` it to `/api/ops/tc-observed` with
+  the box's scoped bearer token (§12.1). No app stop, no write, no relaunch.
+- On a nightly `run`, the reader reuses the **same read-only snapshot** the §7.1
+  preflight already opens — one DB read serves both the write-diff and the
+  observed export.
+- Because it is pure read, `observe` may also run **standalone and more often**
+  than the write (e.g., an extra post-session pull) without any of the
+  quit/relaunch machinery — cadence is a config knob, bounded only by 13.1.
+
+### 13.8 Endpoint + surfacing (TopHat)
+
+- `POST /api/ops/tc-observed` (box → TopHat, scoped box token, tenant-bound):
+  validates guard + shape, runs 13.4, returns a per-account result
+  (`booked | stale | needs_anchor | unmatched | proposed`).
+- `GET /api/ops/tc-observed/last`: the last accepted snapshot for the Operations
+  page — a per-follower table of **balance · day/week P&L · `updated_at` ·
+  connected**, with an explicit **staleness badge** when age exceeds the window
+  or `connected = false`. This is the honest presentation 13.1(2) requires: a
+  balance is always shown *as of* its timestamp, never as "now".
+- Discord (§12.4): the nightly status line gains a one-liner —
+  `synced N followers, M stale, K proposed` — folded into the existing recap.
+
+### 13.9 Reader test suite (no app, no live DB)
+
+- Fixture DB from the Stage-0 schema dump with synthetic follower accounts.
+- Golden: fixture rows in → exact `tc_observed_state.json` out (fresh + stale
+  mixed; leader entity excluded; hidden excluded).
+- Importer: matched→booked with correct anchor math; stale→not booked but stored;
+  missing-anchor→`needs_anchor`, no write; unknown name→`proposed`, no mirror
+  created; duplicate names→error, no write.
+- Guard: wrong goose version / extra `user_id` → no accounts emitted.
+- Idempotency: re-importing the same snapshot books nothing new (monotonic
+  `last_verified` gate holds).
+
+### 13.10 Hard rules for the reverse sync
+
+1. **`SELECT` only** against Tradecopia — never open the DB writable, never take
+   an exclusive lock, safe to run while the app is up (read a copied snapshot).
+2. **Never** read tokens, `auth_token_expiry`, or credential/key files.
+3. **Never** book a balance older than the freshness window or without a start
+   anchor — display it, don't trust it.
+4. **Never** auto-create a mirror; propose and let the operator confirm.
+5. Carry `updated_at` + `connected` end-to-end; the UI never shows a balance
+   without its as-of time.
+6. Guard mismatch (schema/user) = emit error status, send no accounts.
+7. `FirmProfile` remains the only authority on firm rules; TC risk configs are
+   ignored.
+8. Tenant-scoped from day one; a reader only reports accounts its tenant owns.
+
+### 13.11 Stages and gates
+
+Lightweight — read-only, so no Gate-A empirical trade proof is needed.
+
+- **R0 — piggyback recon.** During §9 Stage 0, additionally dump `accounts`,
+  `cash_balances`, `entities` (safe cols) and confirm the name↔account_number
+  match rule and the anchor-capture point per firm. **Gate:** mapping recorded in
+  `fixtures.md`, operator sign-off. *(Balance/name columns already confirmed
+  2026-07-08; the open item is the live follower fleet once onboarded.)*
+- **R1 — importer + reader against fixtures** (agent, no live anything): §13.4
+  + §13.9 tests; `MirrorAccount.start_balance` anchor added. **Gate:** suite
+  green; a hand-built `tc_observed_state.json` imports to the expected mirror
+  state, reviewed by the operator.
+- **R2 — one supervised live pull** (operator present): `tc-apply observe`
+  against the real DB with the live follower fleet connected; operator confirms
+  the Operations table matches the firm dashboards (balances, staleness badges,
+  proposed onboardings). **Gate:** numbers agree; any mismatch → stop, fix the
+  mapping, update this section.
+- **R3 — scheduled daily pull**, folded into the nightly `run` (or a standalone
+  pre/post-session `observe`), status in the Discord recap. **Gate:** a week of
+  balances agreeing with dashboards within the freshness window, zero manual
+  balance edits needed.

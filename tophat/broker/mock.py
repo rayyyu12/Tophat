@@ -61,3 +61,10 @@ class MockBroker:
 
     def wait_flat(self, account_id: int, contract_id: str, **_) -> bool:
         return True
+
+    def last_price(self, contract_id: str) -> float | None:
+        return 23_000.0
+
+    def check_oco_bracket_support(self, account_id: int,
+                                  contract_id: str) -> tuple[str, str]:
+        return "on", ""   # tests subclass to simulate "off"/"error"

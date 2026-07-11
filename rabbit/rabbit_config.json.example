@@ -1,0 +1,25 @@
+{
+  "tophat_url": "https://YOUR-TOPHAT.up.railway.app",
+  "box_token": "PASTE THE TOKEN FROM SETTINGS -> COPIER BOXES (shown once)",
+
+  "db_path": "C:\\Users\\Rayyan Khan\\AppData\\Roaming\\tradecopia\\tradecopia-desktop.db",
+  "exe": "C:\\Program Files\\Tradecopia Solutions Inc\\Tradecopia\\Tradecopia.exe",
+  "process_name": "Tradecopia.exe",
+
+  "guard_goose": 20260521000000,
+  "guard_user": "9931744e-779b-4bdf-8782-1a0eebedc2ac",
+
+  "apply_at": "22:30",
+  "retry_every_min": 15,
+  "max_retries": 8,
+  "poll_interval_s": 60,
+  "blackout_start": "09:30",
+  "blackout_end": "16:10",
+
+  "quit_timeout_s": 60,
+  "boot_wait_s": 45,
+  "backups_dir": "backups",
+  "backup_keep_days": 30,
+  "start_always": false,
+  "observe_leader_entities": false
+}

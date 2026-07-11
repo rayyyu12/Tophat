@@ -248,6 +248,12 @@ def main() -> None:
     days = out["date"].nunique()
     print(f"wrote {OUT.name}: {len(out)} 1s bars, {days} days, "
           f"{out['date'].min()} .. {out['date'].max()}")
+    # refresh the coverage sidecar so the Simulation tab answers without a full load
+    import sys
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from tophat.store import simdata
+    simdata.reset_cache()
+    simdata.write_coverage_sidecar(OUT)
 
 
 if __name__ == "__main__":

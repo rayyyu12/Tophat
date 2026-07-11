@@ -30,6 +30,21 @@ from tophat.store.paths import COPIER_PLANS_DIR
 APEX_INTAKE_PER_DAY = 2
 APEX_NUKE_SLOTS = 1
 
+# Non-lockstep clone evals (Tradeify 0.8x) follow the fleet's eval discipline
+# too: at most this many riding the pack on any day (operator decision
+# 2026-07-09 — same 2-evals/day rule as the Topstep scheduler and the Apex
+# intake). Lockstep 1.0x twins (Lucid) need no gate: a twin only trades when
+# its own leader holds a Topstep eval slot, so it inherits that pacing.
+CLONE_INTAKE_PER_DAY = 2
+
+# Lucid twin throttle: stop buying twins while this many passed twins already
+# wait for a fleet-wide funded slot (5). 2026-07-11 sweep: the original
+# stop-at-1 was too tight — 3 is +$8k median/yr at two logins (funded-twin
+# occupancy 53%→58%) and statistically tied with unthrottled at one login,
+# while unthrottled at two logins wastes ~$12k/yr in twins that rot in the
+# queue (research/forecast_replenishment_sweep.py).
+LUCID_MAX_WAITING = 3
+
 # Eval-finisher sizing (operator-approved 2026-07-06; STATS_AUDIT addendum).
 # The leader's eval win day is 15.5pt x 5 minis = $1,550 gross; one follower
 # mini nets ~$303 after ~$7 RT commission. When a scaled clone eval (Tradeify
@@ -72,6 +87,11 @@ class Leader:
     can_trade: bool
     signal_plan: str = ""   # non-empty = signal channel account
     days_traded: int = 0
+    near_floor: bool = False  # within one eval-stop of the trailing floor -> its next
+                              # entry fires WITHOUT a protective stop (auto-liquidation)
+    owner: str = ""         # API-key login the account lives under; the eval
+                            # pipeline target is maintained PER login (each login
+                            # runs its own 2 eval slots/day)
 
     @property
     def live_eval(self) -> bool:
@@ -176,6 +196,18 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
     apex_evals.sort(key=lambda m: (-m.days_traded, m.mirror_id))
     intake_today = {m.mirror_id for m in apex_evals[:APEX_INTAKE_PER_DAY]}
 
+    # ---- scaled-clone (non-lockstep) eval intake, per firm ----
+    scaled_evals: dict[str, list[MirrorAccount]] = {}
+    for mid in mids:
+        m = mirrors[mid]
+        if (m.phase == "eval" and m.enabled and not m.terminal
+                and get_firm(m.firm).copier_scale_eval < 1.0 - 1e-9):
+            scaled_evals.setdefault(m.firm, []).append(m)
+    clone_intake_today: set[str] = set()
+    for lst in scaled_evals.values():
+        lst.sort(key=lambda m: (-m.days_traded, m.mirror_id))
+        clone_intake_today.update(m.mirror_id for m in lst[:CLONE_INTAKE_PER_DAY])
+
     # ---- per-mirror desired mapping ----
     for mid in mids:
         m = mirrors[mid]
@@ -192,7 +224,9 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                                            "eval passed - must stop copying"))
             plan.lines.append(PlanLine("ACTIVATE", mid,
                                        f"{label}: activate funded account at {firm.label}",
-                                       "then TopHat: Accounts → Activate funded"))
+                                       "then TopHat: Accounts → Activate funded"
+                                       " (Topstep accounts: enable Auto OCO Brackets"
+                                       " in the new account's platform settings)"))
             continue
 
         if m.payout_ready:
@@ -236,27 +270,59 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
         # ---- clone firms (lucid / tradeify) ----
         if m.phase == "eval":
             want_mult = _eval_scale(firm, m)
+            # A leader within one stop of its floor fires its next entry stopless
+            # (should_omit_stop -> broker auto-liquidation). Lucid copies losses 1:1
+            # and dies in lockstep, so that's safe; a non-lockstep follower (Tradeify
+            # 0.8x) neither dies in lockstep nor has a DLL backstop, so a copied
+            # stopless entry can run unbounded. Never pair it to a near-floor leader.
+            guard = firm.copier_scale_eval < 1.0 - 1e-9
+            if guard and mid not in clone_intake_today:
+                plan.desired[mid] = Desired(None, "", want_mult)
+                if m.leader_id is not None:
+                    plan.lines.append(PlanLine(
+                        "UNMAP", mid, f"{label}: remove mapping",
+                        f"waiting for an intake slot ({CLONE_INTAKE_PER_DAY}/day)"))
+                continue
             lid = m.leader_id
             leader = lmap.get(lid) if lid is not None else None
-            if leader is None or not leader.live_eval:
-                # (re)map to the least-loaded live eval leader
-                if eval_leaders:
-                    pick = min(eval_leaders, key=lambda l: (eval_load[l.account_id],
-                                                            l.account_id))
+            unsafe_current = leader is not None and guard and leader.near_floor
+            if leader is None or not leader.live_eval or unsafe_current:
+                # (re)map to a live eval leader (safe leaders only)
+                avail = [l for l in eval_leaders if not (guard and l.near_floor)]
+                if avail:
+                    if guard:
+                        # A non-lockstep rider must sit on a leader the depth-
+                        # first scheduler is actually DRIVING (most advanced =
+                        # today's slot holders) — parked on an idle fresh
+                        # leader, its intake slot would trade nothing.
+                        pick = min(avail, key=lambda l: (-l.days_traded,
+                                                         eval_load[l.account_id],
+                                                         l.account_id))
+                    else:
+                        # lockstep twins spread across the pack (least loaded)
+                        pick = min(avail, key=lambda l: (eval_load[l.account_id],
+                                                         l.account_id))
                     eval_load[pick.account_id] += 1
                     plan.desired[mid] = Desired(pick.account_id, "", want_mult)
                     verb = "MOVE" if lid is not None else "MAP"
-                    why = ("its leader passed/stopped - ride the eval pack"
-                           if lid is not None else "new eval - ride the eval pack")
+                    if unsafe_current:
+                        why = ("leader near its floor (would fire stopless) - "
+                               "remap to a safe eval leader")
+                    elif lid is not None:
+                        why = "its leader passed/stopped - ride the eval pack"
+                    else:
+                        why = "new eval - ride the eval pack"
                     plan.lines.append(PlanLine(
                         verb, mid,
                         f"{label}: follow {pick.name} @ {want_mult:g}x", why))
                 else:
                     plan.desired[mid] = Desired(None, "", want_mult)
                     if lid is not None:
+                        reason = ("all live eval leaders near their floor (would fire "
+                                  "stopless) - hold flat" if guard and eval_leaders
+                                  else "no live eval leader available today")
                         plan.lines.append(PlanLine(
-                            "UNMAP", mid, f"{label}: remove mapping",
-                            "no live eval leader available today"))
+                            "UNMAP", mid, f"{label}: remove mapping", reason))
             else:
                 plan.desired[mid] = Desired(lid, "", want_mult)
             if abs(m.multiplier - want_mult) > 1e-9:
@@ -291,8 +357,13 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
     # ---- buy list ----
     plan.buys = _buy_list(leaders, mirrors)
     for b in plan.buys:
+        why = b["reason"]
+        if b["firm"] == TOPSTEP.label:
+            # New Topstep accounts ship with "Position Brackets" — the API
+            # bracket rejection that cost three evals their day on 2026-07-09.
+            why += " — enable Auto OCO Brackets on each new account"
         plan.lines.append(PlanLine("BUY", "", f"{b['firm']}: buy {b['count']} eval(s)"
-                                   f" (~${b['cost']:,.0f})", b["reason"]))
+                                   f" (~${b['cost']:,.0f})", why))
 
     return plan
 
@@ -356,26 +427,39 @@ def _desire_apex(plan: CopierPlan, m: MirrorAccount, label: str, lmap,
 
 def _buy_list(leaders: list[Leader], mirrors: dict[str, MirrorAccount]) -> list[dict]:
     out = []
-    # Topstep: standing 10-eval pipeline
-    ts_evals = sum(1 for l in leaders
-                   if l.program == "eval" and l.phase == "eval" and l.enabled
-                   and not l.signal_plan)
-    need = TOPSTEP.eval_pipeline_target - ts_evals
-    if need > 0:
-        out.append({"firm": TOPSTEP.label, "count": need,
-                    "cost": need * TOPSTEP.ticket_cost,
-                    "reason": f"pipeline {ts_evals}/{TOPSTEP.eval_pipeline_target}"})
-    # Lucid: min(7, 10 - funded) with total-cap awareness
+    # Topstep: standing eval pipeline PER LOGIN (2026-07-11 sweep: each login
+    # runs its own 2 eval slots/day, so each needs its own 6-standing float —
+    # a fleet-wide 10 split across two logins is ~5/login, which starves the
+    # slots mid-week, −$13-15k median/yr). A brand-new login shows up here
+    # only once its first account exists in the pool snapshot.
+    owners = sorted({l.owner for l in leaders if not l.signal_plan}) or [""]
+    for owner in owners:
+        ts_evals = sum(1 for l in leaders
+                       if l.owner == owner
+                       and l.program == "eval" and l.phase == "eval" and l.enabled
+                       and not l.signal_plan)
+        need = TOPSTEP.eval_pipeline_target - ts_evals
+        if need > 0:
+            login = f"login {owner}: " if owner and len(owners) > 1 else ""
+            out.append({"firm": TOPSTEP.label, "count": need,
+                        "cost": need * TOPSTEP.ticket_cost, "owner": owner,
+                        "reason": f"{login}pipeline {ts_evals}/"
+                                  f"{TOPSTEP.eval_pipeline_target}"})
+    # Lucid: standing 10. Funded accounts do NOT consume slots - the firm
+    # deletes the eval account at funded activation (operator 2026-07-08),
+    # so the 10-account cap only ever holds evals. Twin throttle: stop
+    # stacking twins while LUCID_MAX_WAITING passes already queue for the
+    # fleet-wide funded cap (loosened 1 -> 3, 2026-07-11 sweep).
     lu = [m for m in mirrors.values() if m.firm == LUCID.key and not m.terminal]
-    lu_funded = sum(1 for m in lu if m.phase in ("funded", "waiting"))
     lu_evals = sum(1 for m in lu if m.phase in ("eval", "passed"))
-    target = min(LUCID.eval_pipeline_target, (LUCID.max_total or 99) - lu_funded)
-    need = min(target - lu_evals, (LUCID.max_total or 99) - lu_funded - lu_evals)
+    lu_waiting = sum(1 for m in lu if m.phase in ("passed", "waiting"))
+    target = min(LUCID.eval_pipeline_target, LUCID.max_total or 99)
+    need = target - lu_evals if lu_waiting < LUCID_MAX_WAITING else 0
     if need > 0:
         out.append({"firm": LUCID.label, "count": need,
                     "cost": need * LUCID.ticket_cost,
-                    "reason": f"evals {lu_evals}/{target} (cap 10 total, {lu_funded} funded)"})
-    # Tradeify: standing 10
+                    "reason": f"pipeline {lu_evals}/{target}"})
+    # Tradeify: standing 6 (2026-07-11 sweep; intake stays 2/day)
     td_evals = sum(1 for m in mirrors.values()
                    if m.firm == TRADEIFY.key and m.phase in ("eval", "passed"))
     need = TRADEIFY.eval_pipeline_target - td_evals
@@ -383,15 +467,22 @@ def _buy_list(leaders: list[Leader], mirrors: dict[str, MirrorAccount]) -> list[
         out.append({"firm": TRADEIFY.label, "count": need,
                     "cost": need * TRADEIFY.ticket_cost,
                     "reason": f"pipeline {td_evals}/{TRADEIFY.eval_pipeline_target}"})
-    # Apex: 10-eval cohort when PAs + 0.47*evals < 16 and none in flight
+    # Apex: weekly top-up to 8 standing evals while PA headroom remains.
+    # Replaced the buy-10-when-all-resolved cohort rule (2026-07-11 sweep:
+    # waiting for the whole cohort to resolve starved the 2/day intake between
+    # cohorts — top-up lifts PA occupancy 35%→40% and payouts 97→111/yr,
+    # +$20k median for +$2.5k/yr in tickets). Still no payout-funded cash
+    # gate (operator decision 2026-07-09: the gate starved recovery in bad
+    # runs, P10 −$1K gated vs +$43K ungated).
     ax = [m for m in mirrors.values() if m.firm == APEX.key and not m.terminal]
     pas = sum(1 for m in ax if m.phase in ("funded", "waiting"))
     evals = sum(1 for m in ax if m.phase in ("eval", "passed"))
-    if evals == 0 and pas + 0.47 * evals < APEX.max_funded - 4:
-        out.append({"firm": APEX.label, "count": 10,
-                    "cost": 10 * APEX.ticket_cost,
-                    "reason": f"new cohort ({pas} PAs, cap {APEX.max_funded}) - "
-                              "payout-funded gate: buy only from banked payouts"})
+    need = APEX.eval_pipeline_target - evals
+    if need > 0 and pas < APEX.max_funded - 4:
+        out.append({"firm": APEX.label, "count": need,
+                    "cost": need * APEX.ticket_cost,
+                    "reason": f"pipeline {evals}/{APEX.eval_pipeline_target} "
+                              f"({pas} PAs, cap {APEX.max_funded})"})
     return out
 
 
@@ -455,9 +546,13 @@ def apply_plan(plan: CopierPlan, *, applied_at: str,
 # ------------------------------------------------------------ live assembly
 def leaders_from_pool(pool) -> list[Leader]:
     """Build the solver's leader view from the broker pool's cached snapshots."""
+    from tophat.engine import room_to_floor
     from tophat.server import service
+    from tophat.store.config import load_settings
     from tophat.store.states import load_all
     states = load_all()
+    cfg = load_settings().to_account_config()
+    eval_stop = cfg.eval_stop_pts * cfg.eval_contracts * cfg.point_value
     out: list[Leader] = []
     for h in pool:
         if h.broker is None:
@@ -469,12 +564,19 @@ def leaders_from_pool(pool) -> list[Leader]:
             continue
         for r in snap["accounts"]:
             st = states.get(r["account_id"])
+            # "near floor" == within one eval-stop of the trailing floor, so the
+            # leader's next entry omits its protective stop. Uses the same broker
+            # balance the live should_omit_stop path uses.
+            near_floor = bool(st) and room_to_floor(
+                cfg, st, r.get("balance")) <= eval_stop + 1e-9
             out.append(Leader(
                 account_id=r["account_id"], name=r["name"], program=r["program"],
                 phase=r["phase"], enabled=r["enabled"],
                 can_trade=bool(r["broker_can_trade"]) and not r["force_inactive"],
                 signal_plan=r.get("signal_plan", ""),
                 days_traded=st.days_traded if st else 0,
+                near_floor=near_floor,
+                owner=str(h.owner or ""),
             ))
     return out
 

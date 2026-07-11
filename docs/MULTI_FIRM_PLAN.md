@@ -203,7 +203,12 @@ part of the design — verify each firm's max-idle window once).
   pair for life → lockstep clone thereafter. Never free-run against a mid-cycle leader.
 
 ### Apex — native signal channels
-An Apex account's required bracket depends only on its **mode**, not its cycle position:
+An Apex account's required bracket depends only on its **mode**, not its cycle position.
+> **2026-07-06 re-lock** (STATS_AUDIT_2026-07-06.md §6b — supersedes the numbers
+> below and everywhere else in this doc): flip **14.25pt / $285 gross** (16.25
+> netted fine but 14.25 is +EV with 5.6 ticks of margin), eval **31.5pt** (30pt
+> could not net $3,000 in one day — pass 31%→43%). Nuke unchanged at 32.5pt.
+> `engine.SIGNAL_PLAN_TEMPLATES` is the live source of truth.
 - **Channel A — NUKE** (32.5/25pt @ 2 minis): serves whichever PA holds today's nuke slot.
 - **Channel B — FLIP** (16.25/50pt @ 1 mini): serves every flip-mode PA (identical bracket
   regardless of cycle drift).
@@ -247,7 +252,11 @@ Same inputs ⇒ same outputs. Four rule blocks, run in order:
    (Tradeify eval remap), follower passes (Tradeify wait-for-fresh queue; Lucid twin
    birth), leader dies/retires (orphan → re-queue), payout taken (unmap until withdrawn).
 3. **SCHEDULE**: existing Topstep scheduler (2 eval slots/day, 1 nuke/day, staggered
-   flips) + the Apex mirror of it (2 intake/day, 1 nuke slot/day rotation, flip channel).
+   flips) + the Apex mirror of it (2 intake/day, 1 nuke slot/day rotation, flip channel)
+   + the same 2/day intake for Tradeify evals (operator 2026-07-09: non-lockstep clones
+   follow the fleet's eval discipline; the mapped pair rides the most-advanced live
+   leaders — the ones the depth-first scheduler is actually driving — the rest wait
+   unmapped. Lucid twins need no gate: lockstep 1.0× inherits the leader's pacing).
 4. **EMIT** three artifacts:
    - **Buy list** ("Monday: 2× Topstep, 1× Lucid, 10× Apex bundle").
    - **Copier Plan diff** — the ~5–10 line daily Tradecopia edit (MOVE/MAP/UNMAP/SET
@@ -276,7 +285,7 @@ sequential smaller bets with abort options.
 | 2 | wk 2–3 | + Lucid mirrors (≤7 evals) — zero new strategy risk (clone) | ~$690 | copier mechanics proven: maps, multipliers, outcome inference matches firm dashboards for 2+ wks |
 | 3 | wk 4–5 | + Tradeify 10 evals @0.8× | ~$990 | Stage-2 evidence + first Topstep funded payouts flowing |
 | 4 | wk 6+ | + Apex cohort #1: 2 canary accounts first ($78), then 10-eval cohort staggered 2/day | ~$1,040 + ~$650 activations | signal channels proven on canaries; cumulative payouts ≥ Stage-4 cost |
-| 5 | wk 9+ | Apex cohort #2 toward the 20-PA cap; scale all pipelines | payout-funded only | trailing 4-wk P&L positive |
+| 5 | wk 9+ | Apex cohort #2 toward the 20-PA cap; scale all pipelines | any funds — the payout-funded gate was dropped 2026-07-09 (sim: gated P10 −$1K vs ungated +$43K) | trailing 4-wk P&L positive |
 
 Worst-case out-of-pocket through Stage 4 ≈ **$4.2k**; with replenishment through a bad
 stretch, ceiling ≈ **$8–10k** — inside the risk budget, with three abort points where a

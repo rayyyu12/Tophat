@@ -98,6 +98,10 @@ class ProjectXClient:
         data = self._post("/api/Order/searchOpen", {"accountId": account_id})
         return data.get("orders", [])
 
+    def cancel_order(self, account_id: int, order_id: int) -> None:
+        self._post("/api/Order/cancel", {"accountId": account_id,
+                                         "orderId": order_id})
+
     def search_open_positions(self, account_id: int) -> list[dict]:
         data = self._post("/api/Position/searchOpen", {"accountId": account_id})
         return data.get("positions", [])

@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
 
-from fastapi import FastAPI, Response, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -30,7 +30,11 @@ from tophat.store.config import load_settings, update_settings
 from tophat.store.firms import FIRMS, FOLLOWER_FIRMS
 
 STATIC_DIR = Path(__file__).parent / "static"
-PUBLIC_PATHS = {"/login", "/api/login", "/api/healthz"}
+# tc-* endpoints are public to the COOKIE gate only: they carry their own
+# box-token auth (store/boxes.py) and bind the tenant themselves.
+PUBLIC_PATHS = {"/login", "/api/login", "/api/healthz",
+                "/api/ops/tc-desired", "/api/ops/tc-status",
+                "/api/ops/tc-poll", "/api/ops/tc-observed"}
 SECURE_COOKIES = os.getenv("TOPHAT_HTTPS", "").lower() in ("1", "true", "yes")
 # How often the WS pushes a snapshot to the UI. Cheap: build_snapshot is cached
 # (SNAPSHOT_TTL), so a fast UI cadence does NOT mean a fast broker poll cadence.
@@ -348,7 +352,13 @@ def create_app() -> FastAPI:
         plan = cp.build_today_plan(current_pool(), now.strftime("%Y-%m-%d"))
         cp.apply_plan(plan, applied_at=now.strftime("%Y-%m-%d %H:%M:%S ET"))
         service.invalidate_snapshot_cache()
-        return cp.plan_to_dict(plan)
+        # the mirrors store now matches the day's plan - nudge every paired
+        # Rabbit box to pull it (they poll the flag every ~60s)
+        from tophat.store import boxes as _boxes
+        flagged = _boxes.request_sync(tenant.get_user())
+        out = cp.plan_to_dict(plan)
+        out["boxes_flagged"] = flagged
+        return out
 
     @app.post("/api/mirrors/{mirror_id}/payout-taken")
     def mirror_payout_taken(mirror_id: str):
@@ -366,6 +376,166 @@ def create_app() -> FastAPI:
     def get_analytics():
         from tophat.server import analytics
         return analytics.build_analytics(current_pool())
+
+    # --- copier boxes (TopHat Rabbit pairing) + the box-facing bridge ---
+    from tophat.store import boxes as boxes_store
+
+    @app.get("/api/boxes")
+    def list_boxes():
+        import json as _json
+        from tophat.store.paths import TC_STATUS_FILE
+        p = tenant.resolve(TC_STATUS_FILE)
+        last = None
+        if p.exists():
+            try:
+                last = _json.loads(p.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                last = None
+        return {"boxes": boxes_store.list_boxes(tenant.get_user()),
+                "last_status": last}
+
+    @app.post("/api/boxes")
+    def create_box(body: dict):
+        try:
+            row, token = boxes_store.create_box(
+                tenant.get_user(), (body or {}).get("name", ""))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        # the plaintext token appears exactly once, in this response
+        return {**row, "token": token}
+
+    @app.delete("/api/boxes/{box_id}")
+    def revoke_box(box_id: str):
+        if not boxes_store.revoke(tenant.get_user(), box_id):
+            return JSONResponse({"error": "unknown box"}, status_code=404)
+        return {"ok": True}
+
+    @app.post("/api/boxes/{box_id}/sync")
+    def box_sync_now(box_id: str):
+        """The 'Sync now' button: flag the box; it picks the request up on its
+        next flag poll (~a minute) and runs a full pull->apply->observe cycle."""
+        if not boxes_store.request_sync(tenant.get_user(), box_id):
+            return JSONResponse({"error": "unknown box"}, status_code=404)
+        return {"ok": True}
+
+    def _box_ident(request: Request):
+        auth_hdr = request.headers.get("authorization", "")
+        token = auth_hdr[7:] if auth_hdr.lower().startswith("bearer ") else ""
+        return boxes_store.verify(token)
+
+    @app.get("/api/ops/tc-poll")
+    def tc_poll(request: Request):
+        """The box's cheap heartbeat (~30 bytes): 'should I sync right now?'.
+        Set by the Sync-now button or automatically by Mark-applied."""
+        ident = _box_ident(request)
+        if ident is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        _uid, box_id = ident
+        boxes_store.touch(box_id,
+                          apply_at=request.query_params.get("apply_at"))
+        return {"sync_requested": boxes_store.sync_requested(box_id)}
+
+    @app.get("/api/ops/tc-desired")
+    def tc_desired(request: Request):
+        ident = _box_ident(request)
+        if ident is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        uid, box_id = ident
+        tenant.set_user(uid)
+        boxes_store.touch(box_id)
+        boxes_store.clear_sync(box_id)   # the pull consumes any pending request
+        if not load_settings().copier_sync_enabled:
+            return JSONResponse(
+                {"error": "copier sync is disabled in Settings - enable it "
+                          "when copy trading resumes"}, status_code=409)
+        from tophat.services import tc_export
+        today = _today_et()
+        try:
+            payload = tc_export.build_desired_state(app.state.pool_for(uid), today)
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
+        # drop a copy next to the day's plan for the audit trail (§6.2)
+        import json as _json
+        from tophat.store.atomic import atomic_write_text
+        from tophat.store.paths import COPIER_PLANS_DIR
+        d = tenant.resolve(COPIER_PLANS_DIR)
+        d.mkdir(parents=True, exist_ok=True)
+        atomic_write_text(d / f"tc_desired_{today}.json",
+                          _json.dumps(payload, indent=2))
+        return payload
+
+    @app.post("/api/ops/tc-status")
+    def tc_status(request: Request, body: dict):
+        ident = _box_ident(request)
+        if ident is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        uid, box_id = ident
+        tenant.set_user(uid)
+        body = body or {}
+        result = str(body.get("result") or "?")
+        import json as _json
+        from tophat.store.atomic import atomic_write_text
+        from tophat.store.paths import TC_STATUS_FILE
+        atomic_write_text(tenant.resolve(TC_STATUS_FILE),
+                          _json.dumps(body, indent=2))
+        boxes_store.touch(box_id, result=result,
+                          plan_date=str(body.get("plan_date") or ""))
+        boxes_store.clear_sync(box_id)   # a reported outcome settles the request
+        # Discord: green for applied, red for trouble; noop stays silent
+        url = load_settings().discord_webhook_url
+        if url and result != "noop":
+            from tophat.services import notify
+            ch = body.get("changes") or {}
+            fields = [{"name": k.replace("_", " "), "value": str(v), "inline": True}
+                      for k, v in ch.items() if v]
+            try:
+                notify.post_discord(
+                    url, f"Rabbit: {result} — plan {body.get('plan_date', '?')}",
+                    description=str(body.get("detail") or ""),
+                    color=0x2ECC71 if result == "applied" else 0xED4245,
+                    fields=fields, footer="TopHat Rabbit")
+            except Exception:
+                pass   # notification failure must never fail the status POST
+        return {"ok": True}
+
+    @app.post("/api/ops/tc-observed")
+    def tc_observed(request: Request, body: dict):
+        """Reverse sync intake (§13.8): book fresh balances through the mirror
+        store, store the snapshot + per-account results for the UI."""
+        ident = _box_ident(request)
+        if ident is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        uid, box_id = ident
+        tenant.set_user(uid)
+        boxes_store.touch(box_id)
+        from tophat.services import tc_observe
+        out = tc_observe.import_observed(body or {}, today=_today_et())
+        import json as _json
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _Z
+        from tophat.store.atomic import atomic_write_text
+        from tophat.store.paths import TC_OBSERVED_FILE
+        atomic_write_text(tenant.resolve(TC_OBSERVED_FILE), _json.dumps({
+            "received_at": _dt.now(_Z("America/New_York"))
+                              .strftime("%Y-%m-%d %H:%M:%S ET"),
+            "generated_at": (body or {}).get("generated_at", ""),
+            "box_id": box_id,
+            "accounts": (body or {}).get("accounts") or [],
+            "groups": (body or {}).get("groups") or [],
+            **out,
+        }, indent=2))
+        service.invalidate_snapshot_cache()   # mirror equities may have moved
+        return out
+
+    @app.get("/api/ops/tc-observed/last")
+    def tc_observed_last():
+        import json as _json
+        from tophat.store.paths import TC_OBSERVED_FILE
+        p = tenant.resolve(TC_OBSERVED_FILE)
+        if not p.exists():
+            return {"received_at": "", "accounts": [], "groups": [],
+                    "results": [], "summary": {}}
+        return _json.loads(p.read_text(encoding="utf-8"))
 
     # --- simulation: backtest + Monte Carlo over the cached NQ minute bars ---
     @app.get("/api/sim/meta")
@@ -445,6 +615,25 @@ def create_app() -> FastAPI:
         # change shows on the next refresh instead of waiting out SNAPSHOT_TTL.
         service.invalidate_snapshot_cache()
         return asdict(updated)
+
+    @app.post("/api/settings/test-webhook")
+    def test_webhook(body: dict | None = None):
+        """Send a test embed to the given webhook URL (or the saved one) so the
+        operator can verify a paste before/after saving."""
+        from tophat.services import notify
+        url = str((body or {}).get("url") or "").strip() \
+            or load_settings().discord_webhook_url
+        if not url:
+            return JSONResponse({"error": "no webhook URL saved or provided"},
+                                status_code=400)
+        try:
+            notify.post_discord(
+                url, "Webhook test", color=0x2ECC71,
+                description="TopHat can reach this channel. You're all set.")
+        except Exception as exc:
+            return JSONResponse({"error": f"could not post: {exc}"},
+                                status_code=502)
+        return {"ok": True}
 
     @app.post("/api/run")
     def run(body: dict | None = None):

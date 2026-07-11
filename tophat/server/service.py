@@ -17,6 +17,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from tophat.broker.mock import MockBroker
+from tophat.clock import trading_day
 from tophat.engine import (
     SIGNAL_PLAN_TEMPLATES, Action, Phase, account_base, decide, eod_floor,
     is_nuke_cycle, should_omit_stop)
@@ -206,7 +207,14 @@ def _drive(broker, nq: str) -> tuple[int, str]:
     value for display but never cache it as the day's direction.
     """
     now = datetime.now(ET)
-    today = now.strftime("%Y-%m-%d")
+    today = trading_day(now)
+    # Past the late-afternoon CT session rollover the NEXT trading day's opening
+    # range hasn't formed yet, so there's no drive to show. Without this, the
+    # evening bar fetch would return THIS morning's 09:30-09:45 range and cache
+    # it under the new trading day — a stale "LONG" showing all evening/night.
+    # (The ET calendar date only differs from the trading day after the rollover.)
+    if now.strftime("%Y-%m-%d") != today:
+        return 0, "session closed (flat until next open)"
     if _DRIVE_CACHE["date"] == today and _DRIVE_CACHE["value"]:
         return _DRIVE_CACHE["value"], _DRIVE_CACHE["src"]
     try:
@@ -226,8 +234,9 @@ def _side(direction: int) -> str:
 
 def drive_public() -> dict:
     """Today's locked drive for the unauthenticated healthz endpoint. Cache-only:
-    never touches a broker, returns locked=False until the 09:45 ET read lands."""
-    today = datetime.now(ET).strftime("%Y-%m-%d")
+    never touches a broker, returns locked=False until the 09:45 ET read lands.
+    Keyed off the trading day, so it reads flat after the CT session rollover."""
+    today = trading_day(datetime.now(ET))
     if _DRIVE_CACHE["date"] == today and _DRIVE_CACHE["value"]:
         return {"drive": _side(_DRIVE_CACHE["value"]),
                 "drive_source": _DRIVE_CACHE["src"], "locked": True}
@@ -368,7 +377,10 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
     reads = _read_broker(broker, ck or mode, force=force)
     nq = reads["nq"]
     drive, drive_src = reads["drive"], reads["drive_src"]
-    today = datetime.now(ET).strftime("%Y-%m-%d")
+    # Trading day (rolls ~4 PM CT), not the ET calendar date: after the session
+    # turns over the previous day's nuke/eval slot stamps are stale, so the slot
+    # frees for the next session instead of showing "waiting" until midnight ET.
+    today = trading_day(datetime.now(ET))
 
     accounts = reads["accounts"]
     positions = reads["positions"]
@@ -406,8 +418,10 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
     # Separate copies: assign_day mutates slot-rotation dates, and this is a read-only
     # snapshot (never persisted), so the enabled-set and preview-set must not skew
     # each other's eval/nuke slot rotation.
-    assignments, _ = assign_day(tradeable_states, settings, today, copy.deepcopy(sched), enabled_at)
-    preview_assignments, _ = assign_day(tradeable_all, settings, today, copy.deepcopy(sched), enabled_at)
+    assignments, _ = assign_day(tradeable_states, settings, today,
+                                copy.deepcopy(sched), enabled_at, owner=owner)
+    preview_assignments, _ = assign_day(tradeable_all, settings, today,
+                                        copy.deepcopy(sched), enabled_at, owner=owner)
 
     rows = []
     n_funded = n_eval = n_disabled = 0
@@ -777,8 +791,14 @@ def _fire_signal(broker, aid: int, st, plan_key: str, drive: int, settings, stat
     if settings.hedge_guard:
         ok, reason = position_guard(broker, aid, nq)
         if not ok:
+            # One attempt/day, same as strategy fires: a blocked signal fire
+            # consumes the channel's day (followers get no late entry either).
             row["skipped"] = reason
-            _trade.info("SKIP signal acct=%s %s — hedge guard: %s", aid, plan_key, reason)
+            row["note"] = "attempt consumed - no retry today"
+            st.last_fire_date = today
+            merge_save(states, [aid])
+            _trade.info("SKIP signal acct=%s %s — hedge guard: %s (attempt consumed)",
+                        aid, plan_key, reason)
             return row, False
     entry_bal = balance.get(aid, st.equity)
     _trade.info("PLACE signal acct=%s %s %s x%d target=%.2fpt stop=%.2fpt drive=%s",
@@ -796,8 +816,75 @@ def _fire_signal(broker, aid: int, st, plan_key: str, drive: int, settings, stat
         return row, True
     except Exception as exc:
         row["error"] = str(exc)
-        _trade.exception("SIGNAL FIRE FAILED acct=%s %s — skipped", aid, plan_key)
+        _trade.exception("SIGNAL FIRE FAILED acct=%s %s", aid, plan_key)
+        # One attempt/day — but a timeout can raise after acceptance; a live
+        # position means the signal actually fired and must reconcile.
+        if _open_size(broker, aid, nq):
+            record_pending(st, plan, entry_bal, today, settings.point_value)
+            row["note"] = "place raised but position is open - treated as filled"
+        else:
+            st.last_fire_date = today
+            row["note"] = "attempt consumed - no retry today"
+        merge_save(states, [aid])
         return row, False
+
+
+# Topstep rejects API bracket orders while the account's platform setting is
+# "Position Brackets" instead of "Auto OCO Brackets" (per-account, web-UI only —
+# no API reads or sets it): '/api/Order/place: error 2: Brackets cannot be used
+# with Position Brackets. You must enable Auto OCO Brackets.' (live 2026-07-09,
+# three fresh evals). The rejection text is the only detector we have; the
+# nightly probe (tophat/services/oco_probe.py) uses the same rejection to check
+# every account BEFORE the next morning's fire.
+_OCO_ERR_SNIPPET = "auto oco"
+
+
+def _alert_fire_failures(results: list[dict], names: dict[int, str],
+                         settings, owner: str, today: str) -> None:
+    """Discord-alert every fire attempt this pass that failed or was skipped.
+
+    Attempts are one-per-account-per-day (a failure consumes the day), so each
+    account can appear here at most once per day — no dedup needed. OCO
+    rejections additionally stamp oco_blocked_on so the ops history records
+    which setting was wrong. Best-effort: a bookkeeping failure must never
+    abort a live session pass."""
+    try:
+        placed = [r["account_id"] for r in results if r.get("order_id")]
+        blocked = [r["account_id"] for r in results
+                   if _OCO_ERR_SNIPPET in str(r.get("error", "")).lower()]
+        failed = [r for r in results
+                  if not r.get("order_id") and (r.get("error") or r.get("skipped"))]
+        if placed or blocked:
+            with _REG_LOCK:
+                reg = load_registry()
+                for aid in placed:
+                    reg.entry(aid).oco_blocked_on = ""
+                for aid in blocked:
+                    reg.entry(aid).oco_blocked_on = today
+                save_registry(reg)
+            invalidate_snapshot_cache()
+        if not failed or not settings.discord_webhook_url:
+            return
+        from tophat.services.notify import post_discord
+        blocked_set = set(blocked)
+
+        def _why(r: dict) -> str:
+            if r["account_id"] in blocked_set:
+                return "rejected — Auto OCO Brackets is OFF"
+            return str(r.get("error") or r.get("skipped"))[:140]
+        lines = "\n".join(f"- **{names.get(r['account_id'], r['account_id'])}** "
+                          f"(#{r['account_id']}): {_why(r)}" for r in failed)
+        extra = ("\nEnable **Auto OCO Brackets** in the Topstep platform settings "
+                 "before tomorrow — the nightly probe will re-check."
+                 if blocked_set else "")
+        post_discord(
+            settings.discord_webhook_url,
+            "🚨 Fire attempt failed — account is done for today",
+            description=(f"{owner}: one attempt per account per day; these did "
+                         f"NOT trade and will not retry:\n{lines}{extra}"),
+            color=0xE74C3C)
+    except Exception as exc:
+        _trade.warning("fire-failure alerting failed: %s", exc)
 
 
 def run_session(broker, *, execute: bool, respect_times: bool = False,
@@ -824,7 +911,10 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
     nq = broker.resolve_nq_contract()
     drive, drive_src = _drive(broker, nq)
     now = now_et or datetime.now(ET)
-    today = now.strftime("%Y-%m-%d")
+    # Trading day (rolls ~4 PM CT). Morning entries fire well before the rollover
+    # so this equals the ET calendar date whenever anything actually fires; it
+    # only diverges in the evening, where automation never ticks (see _in_window).
+    today = trading_day(now)
     hhmm = now.strftime("%H:%M")
     really_execute = execute and (manual or settings.auto_execute)
 
@@ -861,15 +951,31 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             signal_keys[a.account_id] = sig
 
     # 1. Reconcile closed trades -> advance the payout cycle (live only).
+    # Covers EVERY account this broker lists with a pending trade, not just the
+    # tradeable set: Topstep flips canTrade=false the moment it liquidates an
+    # account, which used to drop it from this loop BEFORE the blown trade was
+    # booked — phase stayed 'funded', the loss never reached the trade log or
+    # the mirrors, and the freed nuke slot rotated same-day (2026-07-09,
+    # acct 25157729).
     reconciled = []
+    reconciled_ids: list[int] = []
     auto_disabled: list[int] = []
     mirrors = load_mirrors() if really_execute else {}
     mirror_touched: list[str] = []
+    names = {a.account_id: a.name for a in accounts}
     if really_execute:
-        for aid, st in tradeable.items():
-            if not st.pending_label:
+        for a in accounts:
+            aid = a.account_id
+            st = states.get(aid)
+            if st is None or not st.pending_label:
                 continue
-            flat = sum(int(p.get("size", 0)) for p in broker.search_open_positions(aid)) == 0
+            try:
+                flat = sum(int(p.get("size", 0))
+                           for p in broker.search_open_positions(aid)) == 0
+            except Exception as exc:
+                # Never guess an outcome off a failed read — retry next tick.
+                _trade.warning("position read failed acct=%s during reconcile: %s", aid, exc)
+                continue
             # [debuglog] capture pre-reconcile fields (reconcile clears them on close)
             pend_label, entry_bal = st.pending_label, st.pending_entry_balance
             pend_date = st.pending_date or st.last_fire_date
@@ -880,6 +986,7 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                             aid, pend_label, entry_bal, cur_bal)
             out = reconcile(cfg, st, cur_bal, flat)
             if out:
+                reconciled_ids.append(aid)
                 reconciled.append({"account_id": aid, "trade": st.last_fire_date, "outcome": out})
                 trig = {"win": "TARGET hit", "loss": "STOP/liquidation hit",
                         "flat": "closed ~breakeven (EOD/partial)"}.get(out, out)
@@ -892,11 +999,17 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                     _trade.warning("BLOWN acct=%s — trailing floor breached at bal=$%.2f", aid, cur_bal)
                 # Feed the Analytics page: one immutable record per resolved trade.
                 # Practice validation fires stay out - fake money isn't strategy P&L.
-                if aid not in practice_ids:
+                # (Name check too: a practice pending can now reconcile on an auto
+                # tick, where practice_ids is empty.)
+                if aid not in practice_ids and not is_practice(names.get(aid, "")):
+                    # account_name rides along so Analytics can still label the
+                    # row after Topstep deletes the account (ids don't resolve
+                    # against a pruned snapshot)
                     trade_log.log_event(
                         "trade", owner=owner, account_id=aid, trade_date=pend_date,
                         label=pend_label, outcome=out, pnl=round(cur_bal - entry_bal, 2),
-                        balance=round(cur_bal, 2), phase=st.phase.value)
+                        balance=round(cur_bal, 2), phase=st.phase.value,
+                        account_name=names.get(aid, ""))
                 # Followers book the leader's ACTUAL delta scaled by their multiplier.
                 mirror_touched.extend(mirror_sync.apply_leader_outcome(
                     mirrors, aid, cur_bal - entry_bal, today))
@@ -904,12 +1017,16 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                 registry.entry(aid).enabled = False  # surface for manual withdrawal
                 auto_disabled.append(aid)
 
-    # Signal channels and practice accounts never compete for eval/nuke slots —
-    # the scheduler only ever sees the strategy fleet.
+    # Signal channels, practice accounts and MLL-dead accounts never compete for
+    # eval/nuke slots — the scheduler only ever sees the live strategy fleet.
+    # (Dead accounts used to win slots and idle at the fire loop's floor check,
+    # churning the day's slot stamps every tick and starving live accounts.)
     strategy = {aid: st for aid, st in tradeable.items()
-                if aid not in signal_keys and aid not in practice_ids}
+                if aid not in signal_keys and aid not in practice_ids
+                and not _below_mll(cfg, st, balance.get(aid, st.equity))}
     enabled_at = {aid: registry.entry(aid).enabled_at for aid in strategy}
-    assignments, sched = assign_day(strategy, settings, today, load_schedule(), enabled_at)
+    assignments, sched = assign_day(strategy, settings, today, load_schedule(),
+                                    enabled_at, owner=owner)
 
     # 2. Fire due accounts.
     results = []
@@ -944,7 +1061,9 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                             "note": "awaiting manual withdrawal"})
             continue
         if st.last_fire_date == today:
-            results.append({"account_id": aid, "action": "done", "note": "already fired today"})
+            # Also set by a failed/skipped attempt: one attempt per day, period.
+            results.append({"account_id": aid, "action": "done",
+                            "note": "already attempted today"})
             continue
         if respect_times and asg.entry_time:
             if hhmm < asg.entry_time:
@@ -971,8 +1090,16 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             if settings.hedge_guard:
                 ok, reason = position_guard(broker, aid, nq)
             if not ok:
+                # One attempt per account per day (operator rule, 2026-07-09):
+                # the fire moment came and the account couldn't take it cleanly.
+                # Retrying later in the window would enter minutes after the
+                # drive read — off-strategy. The day is consumed.
                 row["skipped"] = reason
-                _trade.info("SKIP acct=%s %s — hedge guard: %s", aid, dec.plan.label, reason)
+                row["note"] = "attempt consumed - no retry today"
+                st.last_fire_date = today
+                merge_save(states, [aid])
+                _trade.info("SKIP acct=%s %s — hedge guard: %s (attempt consumed)",
+                            aid, dec.plan.label, reason)
             else:
                 plan = dec.plan
                 entry_bal = balance.get(aid, st.equity)
@@ -1009,14 +1136,31 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
                     _broker_order_state(broker, aid)   # actual fill price + bracket prices
                 except Exception as exc:
                     row["error"] = str(exc)
-                    _trade.exception("FIRE FAILED acct=%s %s — skipped, fleet continues", aid, plan.label)
+                    _trade.exception("FIRE FAILED acct=%s %s — fleet continues", aid, plan.label)
+                    # One attempt per day: a failed place consumes the account's
+                    # day (no ~30s retries — a later entry is off-strategy). But a
+                    # timeout can raise AFTER the broker accepted the order, so
+                    # first check for a live position; if one exists the fire
+                    # actually happened and must reconcile like any other trade.
+                    if _open_size(broker, aid, nq):
+                        record_pending(st, plan, entry_bal, today, cfg.point_value)
+                        row["note"] = "place raised but position is open - treated as filled"
+                        _trade.warning("acct=%s place raised but a position exists — "
+                                       "recorded as pending", aid)
+                    else:
+                        st.last_fire_date = today
+                        row["note"] = "attempt consumed - no retry today"
+                    merge_save(states, [aid])
         results.append(row)
 
     if really_execute:
+        _alert_fire_failures(results, names, settings, owner, today)
         save_schedule(sched)
         # Merge-save only the accounts this pass touched, so we can't clobber a
         # concurrent writer's entries (snapshot inits, lifecycle edits).
-        merge_save(states, list(tradeable.keys()))
+        # Reconciled ids included: a liquidated account is no longer tradeable
+        # but its BLOWN phase + cleared pending must persist.
+        merge_save(states, list(set(tradeable) | set(reconciled_ids)))
         if mirror_touched:
             merge_save_mirrors(mirrors, mirror_touched)
         if auto_disabled:

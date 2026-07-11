@@ -38,8 +38,13 @@ class FirmProfile:
     # copier / fleet management
     copier_scale_eval: float = 1.0  # follower multiplier during eval (1.0 = 1:1)
     max_funded: int = 5
-    max_total: int | None = None    # evals + funded cap (Lucid); None = uncapped
+    max_total: int | None = None    # concurrent-account cap (Lucid). Funded accounts
+                                    # do NOT consume a slot: the firm deletes the eval
+                                    # account at funded activation (operator 2026-07-08),
+                                    # so in practice this only ever caps evals.
     eval_pipeline_target: int = 10  # standing eval count the replenisher maintains
+                                    # (per LOGIN for the leader firm, fleet-wide
+                                    # for follower firms)
     # apex-gate parameters (zero/unused for half-profit-cap firms)
     apex_min_balance: float = 0.0   # profit balance required to request a payout
     apex_consistency: float = 0.0   # best window day <= x * window profit
@@ -56,7 +61,11 @@ TOPSTEP = FirmProfile(
     dll=1_000.0, trailing=2_000.0,
     eval_target=3_000.0, eval_consistency=0.50, eval_min_days=2,
     win_day_min=150.0, payout_style="half-profit-cap", payout_cap=2_000.0,
-    eval_pipeline_target=10,
+    eval_pipeline_target=6,         # PER LOGIN. 2026-07-11 sweep: steady-state
+                                    # buys are set by the 2 eval slots/day, not
+                                    # the target (6..12 all buy ~3.1/wk); 6 is
+                                    # the floor — 4 starves mid-week, −$13-15k/yr
+                                    # (research/forecast_replenishment_sweep.py)
 )
 
 LUCID = FirmProfile(
@@ -64,7 +73,8 @@ LUCID = FirmProfile(
     dll=1_200.0, trailing=2_000.0,
     eval_target=3_000.0, eval_consistency=0.50, eval_min_days=2,
     win_day_min=150.0, payout_style="half-profit-cap", payout_cap=2_000.0,
-    max_total=10, eval_pipeline_target=7,   # min(7, 10 - funded) applied by the solver
+    max_total=10, eval_pipeline_target=10,  # full 10: funded accounts free their slot
+                                            # (eval deleted on funding; operator 2026-07-08)
 )
 
 TRADEIFY = FirmProfile(
@@ -73,7 +83,9 @@ TRADEIFY = FirmProfile(
     eval_target=3_000.0, eval_consistency=0.40, eval_min_days=3,
     win_day_min=150.0, payout_style="half-profit-cap", payout_cap=2_000.0,
     copier_scale_eval=0.8,                  # 4 minis: $1,200 days beat the 40% rule
-    eval_pipeline_target=10,
+    eval_pipeline_target=6,         # 2026-07-11 sweep: 6 ≈ 10 (~1.8 buys/wk
+                                    # either way, intake-capped at 2/day); 4 is
+                                    # borderline, 2 starves
 )
 
 APEX = FirmProfile(
@@ -82,7 +94,10 @@ APEX = FirmProfile(
     eval_target=3_000.0, eval_consistency=None, eval_min_days=1,
     win_day_min=250.0, payout_style="apex-gate", payout_cap=2_000.0,
     payouts_target=6,               # operator decision 2026-07-06: harvest 6, not 4
-    max_funded=20, eval_pipeline_target=10,  # bought in 10-eval cohorts
+    max_funded=20, eval_pipeline_target=8,  # weekly top-up target (2026-07-11
+                                    # sweep: replaced 10-eval cohorts — the
+                                    # wait-for-all-resolved rule starved the
+                                    # 2/day intake; +$20k median/yr)
     apex_min_balance=2_600.0, apex_consistency=0.50, payout_request=1_500.0,
 )
 

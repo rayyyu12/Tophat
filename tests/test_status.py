@@ -28,3 +28,27 @@ def test_lifecycle_label_inactive_eval():
     cfg = AccountConfig()
     st = AccountState(phase=Phase.EVAL, days_traded=0)
     assert lifecycle_label(cfg, st, can_trade=False) == "inactive - can't trade"
+
+
+def test_flip_label_counts_flips_not_winning_days():
+    """Nuke cycle: the landed nuke banked winning day #1, so the cycle needs
+    only 4 flips - the label numbers the flip being attempted out of 4."""
+    cfg = AccountConfig()   # winning_days_required=5
+    st = AccountState(phase=Phase.FUNDED, payouts_taken=0,   # nuke cycle
+                      nuke_hit_this_cycle=True, winning_days_this_cycle=1)
+    assert lifecycle_label(cfg, st) == "flip 1/4 (payout 1)"
+    st.winning_days_this_cycle = 2   # first flip landed
+    assert lifecycle_label(cfg, st) == "flip 2/4 (payout 1)"
+    st.winning_days_this_cycle = 4   # attempting the last flip
+    assert lifecycle_label(cfg, st) == "flip 4/4 (payout 1)"
+
+
+def test_flip_label_flip_only_cycle_needs_all_five():
+    """Odd payouts_taken = flip-only cycle: all 5 winning days come from
+    flips, numbered attempt-style from 1/5."""
+    cfg = AccountConfig()
+    st = AccountState(phase=Phase.FUNDED, payouts_taken=1,
+                      winning_days_this_cycle=0)
+    assert lifecycle_label(cfg, st) == "flip 1/5 (payout 2)"
+    st.winning_days_this_cycle = 3
+    assert lifecycle_label(cfg, st) == "flip 4/5 (payout 2)"

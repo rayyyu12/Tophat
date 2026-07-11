@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 
 from tophat.store import tenant
@@ -23,6 +23,9 @@ class AccountEntry:
     signal_plan: str = ""         # non-empty = signal channel (engine.SIGNAL_PLAN_TEMPLATES
                                   # key): fires that bracket for the copier, bypasses the
                                   # strategy fleet entirely
+    oco_blocked_on: str = ""      # YYYY-MM-DD the account last failed the Auto OCO
+                                  # Brackets check (live order rejection or nightly
+                                  # probe); cleared by the next accepted bracket/probe
 
 
 @dataclass
@@ -59,8 +62,12 @@ def load_registry(path: Path | None = None) -> AccountRegistry:
     raw = json.loads(path.read_text(encoding="utf-8"))
     reg = AccountRegistry()
     reg.settings = AppSettings(**raw.get("settings", {}))
+    # Tolerant load: drop keys the dataclass no longer has (e.g. the retired
+    # bracket_verified flag) so a schema change can't brick the registry.
+    known = {f.name for f in fields(AccountEntry)}
     for k, v in raw.get("accounts", {}).items():
-        reg.accounts[int(k)] = AccountEntry(**v)
+        reg.accounts[int(k)] = AccountEntry(**{kk: vv for kk, vv in v.items()
+                                               if kk in known})
     return reg
 
 
@@ -80,6 +87,7 @@ def save_registry(reg: AccountRegistry, path: Path | None = None) -> None:
                 "exclude_analytics": e.exclude_analytics,
                 "enabled_at": e.enabled_at,
                 "signal_plan": e.signal_plan,
+                "oco_blocked_on": e.oco_blocked_on,
             }
             for k, e in reg.accounts.items()
         },

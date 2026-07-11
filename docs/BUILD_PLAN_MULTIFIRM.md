@@ -153,7 +153,8 @@ Deterministic function: `build_plan(leaders, mirrors, settings, today) -> Copier
 Pure — same inputs, same plan; fully unit-testable. Four blocks (PLAN §5):
 
 1. **Replenish**: per-firm `buy = max(0, target − live_evals)` with caps
-   (lucid `min(7, 10−funded)`; apex cohort gate `PAs + 0.47×evals < 16` + payout-funded).
+   (lucid `min(7, 10−funded)`; apex cohort gate `PAs + 0.47×evals < 16` — the
+   payout-funded condition was dropped 2026-07-09: cohorts buy whenever slots clear).
 2. **Pair**: apply events — leader passed (remap tradeify evals to the youngest live
    eval leader), mirror passed (lucid twin activates; tradeify → `waiting` queue),
    fresh Express appeared (pop one waiting tradeify, pair for life, multiplier→1.0),

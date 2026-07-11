@@ -55,6 +55,16 @@ def load_config() -> dict:
     cfg = dict(DEFAULTS)
     if CONFIG_FILE.exists():
         cfg.update(json.loads(CONFIG_FILE.read_text(encoding="utf-8")))
+    # The Settings-page webhook (per-user settings.json, discord_webhook_url)
+    # wins over the local config — the UI is the one place to paste it
+    # (2026-07-08). The config value stays as a fallback so a box can still
+    # alert if the settings file is unreadable.
+    try:
+        s = json.loads(Path(cfg["settings_json"]).read_text(encoding="utf-8"))
+        if s.get("discord_webhook_url"):
+            cfg["webhook_url"] = s["discord_webhook_url"]
+    except Exception:
+        pass
     return cfg
 
 

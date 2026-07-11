@@ -146,3 +146,57 @@ def test_eval_slot_tiebreak_prefers_earlier_enabled():
     out, _ = assign_day(accts, S, "2026-06-22", ScheduleState(), enabled_at)
     assert out[1].action == "idle"
     assert out[2].action == "eval" and out[3].action == "eval"
+
+
+# --- mid-day slot consumption (2026-07-09 double-nuke incident) -----------------
+
+def test_blown_nuke_slot_stays_consumed_for_the_day():
+    # 09:45: #1 wins the day's only nuke slot, then gets liquidated and vanishes
+    # from the fleet (canTrade=false). The freed slot must NOT rotate to #2 the
+    # same day — one attempt per nuke slot per day. Tomorrow #2 gets it.
+    accts = {1: funded(), 2: funded()}
+    out, sched = assign_day(accts, S, "2026-07-09", ScheduleState())
+    assert out[1].action == "nuke" and out[2].action == "idle"
+    del accts[1]                                   # liquidated mid-morning
+    out, sched = assign_day(accts, S, "2026-07-09", sched)
+    assert out[2].action == "idle"
+    out, _ = assign_day(accts, S, "2026-07-10", sched)
+    assert out[2].action == "nuke"
+
+
+def test_passed_eval_slot_stays_consumed_for_the_day():
+    from tophat.store.config import TopHatSettings
+    s = TopHatSettings(); s.max_evals_per_day = 1
+    accts = {1: _eval(days_traded=1), 2: _eval()}
+    out, sched = assign_day(accts, s, "2026-07-09", ScheduleState())
+    assert out[1].action == "eval" and out[2].action == "idle"
+    accts[1] = AccountState(phase=Phase.PASSED, base_balance=50_000)  # passed mid-morning
+    out, sched = assign_day(accts, s, "2026-07-09", sched)
+    assert out[2].action == "idle"                 # slot consumed by the pass
+    out, _ = assign_day(accts, s, "2026-07-10", sched)
+    assert out[2].action == "eval"
+
+
+def test_slot_holder_keeps_slot_across_ticks():
+    # assign_day runs every ~30s tick; the stamp must not change the sort so the
+    # un-fired slot churns to a different account each tick.
+    accts = {1: _eval(), 2: _eval(), 3: _eval()}
+    out1, sched = assign_day(accts, S, "2026-07-09", ScheduleState())
+    winners1 = {a for a, o in out1.items() if o.action == "eval"}
+    out2, sched = assign_day(accts, S, "2026-07-09", sched)
+    winners2 = {a for a, o in out2.items() if o.action == "eval"}
+    assert winners1 == winners2
+
+
+def test_holder_keeps_slot_over_late_enabled_advanced_eval():
+    # A more-advanced eval enabled mid-morning must not bump the account already
+    # holding today's stamp (stability beats depth-first within the day).
+    from tophat.store.config import TopHatSettings
+    s = TopHatSettings(); s.max_evals_per_day = 1
+    accts = {1: _eval()}
+    out, sched = assign_day(accts, s, "2026-07-09", ScheduleState())
+    assert out[1].action == "eval"
+    accts[2] = _eval(days_traded=3)               # enabled later, further along
+    out, sched = assign_day(accts, s, "2026-07-09", sched,
+                            enabled_at={1: 1.0, 2: 100.0})
+    assert out[1].action == "eval" and out[2].action == "idle"

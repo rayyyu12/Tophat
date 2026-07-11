@@ -19,6 +19,17 @@ TRADE_LOG_FILE = DATA_DIR / "trade_log.jsonl"
 # Write-through {account_id: broker name} cache, refreshed by build_snapshot so
 # offline tools (deploy/watchdog.py recap) can label accounts without auth.
 ACCOUNT_NAMES_FILE = DATA_DIR / "account_names.json"
+# Nightly OCO probe bookkeeping: the last completed probe night, persisted so a
+# server restart after the probe can't re-probe (and re-alert) the same night.
+OCO_PROBE_FILE = DATA_DIR / "oco_probe_state.json"
+
+# Copier-box (TopHat Rabbit) pairing: the token registry is GLOBAL — a bearer
+# token must resolve to its user before any tenant context exists. The last
+# apply status a box reported is per-tenant.
+COPIER_BOXES_FILE = DATA_DIR / "copier_boxes.json"
+TC_STATUS_FILE = DATA_DIR / "tc_apply_status.json"
+# Last reverse-sync snapshot a box reported (observed balances + import results).
+TC_OBSERVED_FILE = DATA_DIR / "tc_observed.json"
 
 # Simulation page: templates + stored runs live with runtime state; the bar
 # cache is TICK-derived 1-second bars (built by export_sim_ticks.py from the

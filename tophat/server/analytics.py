@@ -14,7 +14,7 @@ from zoneinfo import ZoneInfo
 
 from tophat.services.status import is_practice
 from tophat.store import trade_log
-from tophat.store.firms import FIRMS, TOPSTEP
+from tophat.store.firms import FIRMS, FOLLOWER_FIRMS, TOPSTEP
 from tophat.store.mirrors import load_mirrors
 from tophat.store.registry import load_registry
 from tophat.store.states import load_all
@@ -73,26 +73,70 @@ def _leg_rows(trades: list[dict]) -> list[dict]:
     return rows
 
 
-def _curve(trades: list[dict], payouts: list[dict]) -> list[dict]:
-    """Cumulative realized P&L and banked payouts by day."""
-    daily_pnl: dict[str, float] = {}
-    daily_cash: dict[str, float] = {}
+# Topstep legs that trade FUNDED money. Evals never chart: a ticket's paper
+# P&L is a stepping stone, not profit (operator decision 2026-07-08).
+FUNDED_LABELS = {"nuke", "renuke", "flip"}
+
+
+def _curves(trades: list[dict], mirror_trades: list[dict],
+            payouts: list[dict]) -> dict:
+    """Per-day cumulative profit series for the chart: one per firm's funded
+    accounts, their sum ("All funded" — the fleet's equity curve; payouts are
+    day P&L already booked, so withdrawals don't dip it), and banked payouts
+    (cash actually extracted). Leader funded legs are picked by label; mirror
+    events carry their phase explicitly."""
+    firm_short = {k: k.split("-")[0] for k in FOLLOWER_FIRMS}   # apex-50k -> apex
+    daily: dict[str, dict[str, float]] = {}
+
+    def add(day: str, key: str, v: float) -> None:
+        if day:
+            d = daily.setdefault(day, {})
+            d[key] = d.get(key, 0.0) + v
+
     for t in trades:
-        d = str(t.get("trade_date") or t.get("date") or "")
-        if d:
-            daily_pnl[d] = daily_pnl.get(d, 0.0) + float(t.get("pnl") or 0.0)
+        if str(t.get("label")) in FUNDED_LABELS:
+            add(str(t.get("trade_date") or t.get("date") or ""), "topstep",
+                float(t.get("pnl") or 0.0))
+    for t in mirror_trades:
+        key = firm_short.get(str(t.get("firm")))
+        if key and t.get("phase") == "funded":
+            add(str(t.get("trade_date") or t.get("date") or ""), key,
+                float(t.get("pnl") or 0.0))
     for p in payouts:
-        d = str(p.get("date") or "")
-        if d:
-            daily_cash[d] = daily_cash.get(d, 0.0) + float(p.get("amount") or 0.0)
-    pts = []
-    pnl_cum = cash_cum = 0.0
-    for d in sorted(set(daily_pnl) | set(daily_cash)):
-        pnl_cum += daily_pnl.get(d, 0.0)
-        cash_cum += daily_cash.get(d, 0.0)
-        pts.append({"date": d, "realized_cum": round(pnl_cum, 2),
-                    "banked_cum": round(cash_cum, 2)})
-    return pts
+        add(str(p.get("date") or ""), "banked", float(p.get("amount") or 0.0))
+
+    firm_keys = ["topstep"] + [firm_short[k] for k in sorted(FOLLOWER_FIRMS)]
+    labels = {"topstep": f"{TOPSTEP.label} funded",
+              **{firm_short[k]: f"{p.label} funded"
+                 for k, p in FOLLOWER_FIRMS.items()}}
+    dates = sorted(daily)
+    run = dict.fromkeys([*firm_keys, "banked"], 0.0)
+    cum: dict[str, list[float]] = {k: [] for k in [*firm_keys, "total", "banked"]}
+    total = 0.0
+    for d in dates:
+        for k in [*firm_keys, "banked"]:
+            run[k] += daily[d].get(k, 0.0)
+            cum[k].append(round(run[k], 2))
+        total += sum(daily[d].get(k, 0.0) for k in firm_keys)
+        cum["total"].append(round(total, 2))
+    if dates:
+        # Cumulative profit was $0 the day before the first chartable day -
+        # prepend that baseline so the chart draws a line from day one instead
+        # of sitting blank until a second day lands.
+        from datetime import date as _date, timedelta as _td
+        try:
+            day0 = (_date.fromisoformat(dates[0]) - _td(days=1)).isoformat()
+            dates = [day0, *dates]
+            for k in cum:
+                cum[k].insert(0, 0.0)
+        except ValueError:
+            pass   # unparseable first date: fall back to the raw series
+    series = ([{"key": k, "label": labels[k], "cum": cum[k]} for k in firm_keys]
+              + [{"key": "total", "label": "All funded", "cum": cum["total"]},
+                 {"key": "banked", "label": "Payouts banked", "cum": cum["banked"]}])
+    for s in series:
+        s["has_data"] = any(abs(v) > 1e-9 for v in s["cum"])
+    return {"dates": dates, "series": series}
 
 
 def _fleet_and_spend(pool, log_ids: set, excluded: set) -> tuple[dict, dict, list[dict]]:
@@ -214,8 +258,12 @@ def build_analytics(pool) -> dict:
     events = trade_log.read_events()
     registry = load_registry()
     excluded = {aid for aid, e in registry.accounts.items() if e.exclude_analytics}
-    trades = [e for e in events if e.get("type") == "trade"
-              and e.get("account_id") not in excluded]
+    trades_all = [e for e in events if e.get("type") == "trade"
+                  and e.get("account_id") not in excluded]
+    # Mirror day-bookings (source="mirror") feed ONLY the per-firm curves;
+    # legs, realized P&L and the recent-trades table stay leader-only.
+    trades = [e for e in trades_all if e.get("source") != "mirror"]
+    mirror_trades = [e for e in trades_all if e.get("source") == "mirror"]
     payouts = [e for e in events if e.get("type") == "payout"
                and e.get("account_id") not in excluded]
     log_ids = {e.get("account_id") for e in events
@@ -232,12 +280,35 @@ def build_analytics(pool) -> dict:
         names = service.account_names(pool)
     except Exception:
         pass
+    # Deleted/rotated accounts (Topstep prunes passed evals and blown nukes)
+    # drop out of the live snapshot, which used to leave "#25157729" rows.
+    # Fall back to the name the event recorded at log time, then to the
+    # write-through account_names.json cache.
+    cached_names: dict[int, str] = {}
+    try:
+        import json as _json
+        from tophat.store import tenant
+        from tophat.store.paths import ACCOUNT_NAMES_FILE
+        p = tenant.resolve(ACCOUNT_NAMES_FILE)
+        if p.exists():
+            cached_names = {int(k): str(v) for k, v in
+                            _json.loads(p.read_text(encoding="utf-8")).items() if v}
+    except Exception:
+        pass
+
+    reg_alias = {aid: e.alias for aid, e in registry.accounts.items()
+                 if getattr(e, "alias", "")}
+
+    def name_of(aid, event_name: str = "") -> str:
+        return (names.get(aid) or event_name or cached_names.get(aid)
+                or reg_alias.get(aid) or f"#{aid}")
+
     recent = []
     for t in reversed(trades[-15:]):
         aid = t.get("account_id")
         recent.append({
             "date": t.get("trade_date") or t.get("date") or "",
-            "account": names.get(aid, f"#{aid}"),
+            "account": name_of(aid, str(t.get("account_name") or "")),
             "owner": t.get("owner") or "",
             "label": t.get("label") or "?",
             "outcome": t.get("outcome") or "?",
@@ -246,7 +317,7 @@ def build_analytics(pool) -> dict:
         })
     recent_payouts = []
     for p in reversed(payouts[-10:]):
-        who = (names.get(p.get("account_id"), f"#{p.get('account_id')}")
+        who = (name_of(p.get("account_id"))
                if p.get("source") == "leader" else str(p.get("mirror_id") or "?"))
         recent_payouts.append({"date": p.get("date") or "", "who": who,
                                "source": p.get("source") or "leader",
@@ -264,7 +335,7 @@ def build_analytics(pool) -> dict:
             "net_cash_est": round(banked - spend_total, 2),
         },
         "legs": _leg_rows(trades),
-        "curve": _curve(trades, payouts),
+        "curves": _curves(trades, mirror_trades, payouts),
         "funnel": funnel,
         "fleet": fleet,
         "spend_breakdown": spend_rows,

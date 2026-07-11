@@ -47,9 +47,23 @@ class TopHatSettings:
     max_evals_per_day: int = 2         # copy ≤2 evals/day (STRATEGY §1, correlated-exposure cap)
     eval_pipeline_depth_first: bool = True  # slots go to most-advanced evals first (front-load passes)
     entry_grace_min: int = 10          # fire at entry_time..+grace only; later = off-strategy, skip day
+    # Nightly Auto-OCO Brackets probe (ET; 22:00 = 21:00 CT, evening session).
+    # Empty string disables. Runs Sun-Thu nights; alerts via Discord webhook.
+    oco_probe_time: str = "22:00"
     auto_execute: bool = False         # False = dry-run plans only (safe default)
     auto_disable_on_payout_ready: bool = True
     hedge_guard: bool = True           # skip an entry if the account isn't flat
+    # Master switch for the Tradecopia bridge: False = every Rabbit pull gets
+    # a clean 409 ("disabled in Settings") and no box ever touches the copier,
+    # even while paired and running. The exporter separately refuses when no
+    # active mirrors exist, so a Topstep-only stretch is quiet by itself.
+    copier_sync_enabled: bool = True
+
+    # --- notifications ---
+    # Per-user Discord webhook (Settings page). Consumed by the deploy-side
+    # Watchdog (which prefers it over its local config) and by server-side
+    # posts (copier apply results). Empty = notifications off for this user.
+    discord_webhook_url: str = ""
 
     # --- display ---
     show_disabled: bool = True
@@ -96,5 +110,12 @@ def update_settings(patch: dict, path: Path | None = None) -> TopHatSettings:
             setattr(s, k, v)
     s.nuke_entry_time = _norm_hhmm(s.nuke_entry_time)
     s.flip_stagger_times = [_norm_hhmm(t) for t in s.flip_stagger_times]
+    s.oco_probe_time = _norm_hhmm(s.oco_probe_time) if str(s.oco_probe_time).strip() else ""
+    u = str(s.discord_webhook_url or "").strip()
+    if u and not (u.startswith("https://") and "discord" in u.split("/")[2]
+                  and "/api/webhooks/" in u):
+        raise ValueError("discord_webhook_url must be a Discord webhook URL "
+                         "(https://discord.com/api/webhooks/...)")
+    s.discord_webhook_url = u
     save_settings(s, path)
     return s

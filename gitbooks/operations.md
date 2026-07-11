@@ -33,7 +33,7 @@ Per-mirror warnings from inferred state. Color and tag = severity, nothing else:
 
 - **Signal channels**: which leader account feeds each channel and how many followers it has today.
 - **Payout queue**: mirrors eligible for withdrawal, with the amount to request.
-- **Buy list**: evals to purchase to keep each firm's pipeline full (Topstep 10, Lucid min(7, 10 minus funded), Tradeify 10, Apex in cohorts of 10 funded from banked payouts).
+- **Buy list**: evals to purchase to keep each firm's pipeline full (Topstep 6 **per login**, Lucid 10, Tradeify 6, Apex topped up to 8 standing while PAs < 16). Lucid buys pause automatically once three passed twins are waiting for a funded slot - fewer tickets, same profit. Steady-state this averages about 3 Topstep evals per login, 3-4 Lucid, 2 Tradeify and 4-5 Apex per week; the targets just keep the daily slots fed, they are not the weekly spend.
 
 ## Mirror mappings
 

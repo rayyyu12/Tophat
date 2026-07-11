@@ -34,11 +34,15 @@ data/sim_templates.json
 data/copier_plans/
 
 # Local research / backtest scripts + datasets — kept locally, not shipped.
-# Only research/reconstruction/ (scripts + small outputs) is tracked; its
-# tick-derived bar cache is regenerated locally and stays out of the repo.
+# Only research/reconstruction/ (scripts + small outputs) is tracked.
 research/*
 !research/reconstruction/
 research/reconstruction/*.parquet
+# EXCEPTION: the Simulation page's bar cache ships in the repo ON PURPOSE —
+# it's how new tick imports reach every user/deployment (import_ticks.py,
+# operator decision 2026-07-08). ~50MB; each re-import adds a new blob to
+# git history, so import monthly, not daily.
+!research/reconstruction/sim_ticks_rth_1s.parquet
 
 
 # Root-level dev shim scripts (thin redirects into research.* / tophat.*).
@@ -58,6 +62,16 @@ research/reconstruction/*.parquet
 /probe.py
 /run_campaign_compare.py
 /runner.py
+
+# TopHat Rabbit box-local runtime (rabbit/README.md): the config holds the
+# box token; state/log/backups are per-machine.
+rabbit/rabbit_config.json
+rabbit/rabbit_state.json
+rabbit/rabbit.log
+rabbit/tc_apply_status.json
+rabbit/backups/
+# Copier-box token registry (server-side runtime state, hashed tokens)
+data/copier_boxes.json
 
 # [debuglog] TEMPORARY local debug logs (remove the logger + this line later)
 logs/

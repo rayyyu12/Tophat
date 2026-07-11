@@ -34,6 +34,7 @@ visible to (or affects) any other user.
 | Nuke entry time | When nukes and evals fire. Entered in your local time, stored as ET |
 | Flip stagger times | Flips spread across these entry slots |
 | Max nukes / evals per day | Decorrelation caps, per API key |
+| OCO probe time | Nightly Auto-OCO Brackets check (Sun-Thu, evening session). Place-and-cancel probe per enabled non-leader account; Discord alert names any account still on Position Brackets. Empty disables |
 | Auto-execute | Arms the scheduler to place real orders. Off = dry-run plans only |
 | Auto-disable on payout | Payout-ready accounts switch off until you withdraw |
 | Hedge guard | Skip any account that is not flat at fire time |
@@ -42,4 +43,5 @@ visible to (or affects) any other user.
 
 - Manual Execute (Trading page) fires regardless of auto-execute - it is an explicit, confirmed operator action.
 - Entries later than entry time + 10 minutes are skipped for the day (the drive edge is measured at the entry time).
+- One attempt per account per day: a rejected/failed fire consumes the day (no retries); Discord carries the reason.
 - Time fields display and accept your local time zone; the backend schedules in ET.

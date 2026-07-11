@@ -6,6 +6,10 @@ its copier multiplier, then advances under ITS firm's accounting rules (store/fi
 qualifying-day minimums on NET day P&L, eval consistency, trailing floor with
 breakeven lock, and payout gates. Money movement and copier edits stay manual —
 this module only infers state and raises hazards for the operator.
+
+Every booked mirror day also appends one trade event (source="mirror") to the
+trade log — the raw feed for Analytics' per-firm funded profit curves. Leader
+aggregates (legs, realized P&L, recent trades) ignore these rows.
 """
 
 from __future__ import annotations
@@ -102,7 +106,14 @@ def apply_leader_outcome(mirrors: dict[str, MirrorAccount], leader_id: int,
         if m.last_outcome_date == date:
             continue
         pnl = leader_delta * m.multiplier
+        phase_before = m.phase   # the phase the P&L was EARNED in (advance may flip it)
         events = advance_mirror(m, pnl, date)
+        from tophat.store import trade_log
+        trade_log.log_event(
+            "trade", source="mirror", mirror_id=mid, firm=m.firm,
+            trade_date=date, phase=phase_before,
+            outcome=("win" if pnl > 0 else "loss" if pnl < 0 else "flat"),
+            pnl=round(pnl, 2), equity=round(m.equity, 2))
         touched.append(mid)
         log.info("MIRROR %s (%s) booked $%+.2f from leader %s -> equity=$%.2f "
                  "phase=%s win_days=%d%s", mid, m.firm, pnl, leader_id, m.equity,
@@ -125,6 +136,7 @@ def activate_funded(m: MirrorAccount, *, leader_id: int | None = None) -> None:
     m.window_profit = m.best_day = m.eval_best_day = 0.0
     m.payout_ready = False
     m.multiplier = 1.0
+    m.start_balance = None   # new phase, new anchor (reverse sync §13.4.1)
     firm = get_firm(m.firm)
     if firm.payout_style == "apex-gate":
         m.channel = "nuke"          # fresh PA opens its cycle on the nuke channel

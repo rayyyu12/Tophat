@@ -49,11 +49,74 @@ def test_build_analytics_aggregates_legs_curve_and_totals():
     assert legs["nuke"]["n"] == 0 and legs["nuke"]["live_wr"] is None
     assert a["totals"]["payouts_banked"] == 1500.0
     assert a["totals"]["realized_pnl"] == 660.0
-    dates = [p["date"] for p in a["curve"]]
-    assert dates == sorted(dates)
-    assert a["curve"][-1]["realized_cum"] == 660.0
-    assert a["curve"][-1]["banked_cum"] == 1500.0
+    c = a["curves"]
+    assert c["dates"] == sorted(c["dates"])
+    # zero baseline the day before the first chartable day, so even a single
+    # recorded day draws a line
+    assert c["dates"][0] == "2026-06-22"         # first flip lands 06-23
+    s = {x["key"]: x for x in c["series"]}
+    assert list(s) == ["topstep", "apex", "lucid", "tradeify", "total", "banked"]
+    assert all(x["cum"][0] == 0.0 for x in c["series"])
+    assert s["topstep"]["cum"][-1] == 160.0      # flips only - evals never chart
+    assert s["total"]["cum"][-1] == 160.0
+    assert s["banked"]["cum"][-1] == 1500.0
+    assert s["topstep"]["has_data"] and not s["apex"]["has_data"]
     assert len(a["recent"]) == 4
+
+
+def test_recent_trades_resolve_names_for_deleted_accounts():
+    """Rows must show broker names, not '#25157729', even after Topstep prunes
+    the account: event-stamped name first, then the account_names.json cache."""
+    import json
+    from tophat.store import tenant
+    from tophat.store.paths import ACCOUNT_NAMES_FILE
+    trade_log.log_event("trade", account_id=99, label="flip", outcome="win",
+                        pnl=100.0, trade_date="2026-07-09", balance=100.0,
+                        account_name="EXPRESS-V2-9790-30778194")
+    trade_log.log_event("trade", account_id=98, label="nuke", outcome="loss",
+                        pnl=-1000.0, trade_date="2026-07-09", balance=-1000.0)
+    trade_log.log_event("trade", account_id=97, label="flip", outcome="win",
+                        pnl=50.0, trade_date="2026-07-09", balance=50.0)
+    p = tenant.resolve(ACCOUNT_NAMES_FILE)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps({"98": "50KTC-V2-260527-11111111"}), encoding="utf-8")
+
+    accounts = {r["account"] for r in analytics.build_analytics([])["recent"]}
+    assert "EXPRESS-V2-9790-30778194" in accounts   # stamped on the event
+    assert "50KTC-V2-260527-11111111" in accounts   # write-through cache
+    assert "#97" in accounts                        # nothing anywhere: honest #id
+
+
+def test_single_day_series_still_charts():
+    """One chartable day must render a line, not a blank panel: the curves
+    carry a $0 baseline dated the day before the first event."""
+    trade_log.log_event("trade", account_id=8, label="flip", outcome="win",
+                        pnl=150.0, trade_date="2026-07-09", balance=150.0)
+    c = analytics.build_analytics([])["curves"]
+    assert c["dates"][:2] == ["2026-07-08", "2026-07-09"]
+    s = {x["key"]: x for x in c["series"]}
+    assert s["topstep"]["cum"][:2] == [0.0, 150.0]
+
+
+def test_mirror_bookings_feed_firm_curves_only():
+    from tophat.services import mirror_sync
+    from tophat.store import mirrors as MS
+    a = MS.create_mirror("lucid-50k", leader_id=1, phase="funded")
+    b = MS.create_mirror("apex-50k", leader_id=1)            # eval phase
+    ms = {a.mirror_id: a, b.mirror_id: b}
+    mirror_sync.apply_leader_outcome(ms, 1, 300.0, "2026-06-22")
+    mirror_sync.apply_leader_outcome(ms, 1, -100.0, "2026-06-23")
+
+    a = analytics.build_analytics([])
+    s = {x["key"]: x for x in a["curves"]["series"]}
+    # leading 0 = the baseline point prepended for day-one charting
+    assert s["lucid"]["cum"] == [0.0, 300.0, 200.0]   # funded mirror charts
+    assert not s["apex"]["has_data"]             # eval-phase P&L never charts
+    assert s["total"]["cum"] == [0.0, 300.0, 200.0]
+    # leader-side aggregates ignore mirror rows entirely
+    assert a["trades_recorded"] == 0
+    assert a["totals"]["realized_pnl"] == 0.0
+    assert a["recent"] == []
 
 
 def test_reconcile_writes_trade_events(ctl):

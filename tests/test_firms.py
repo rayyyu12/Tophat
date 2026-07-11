@@ -67,7 +67,10 @@ def test_tradeify_scale_beats_consistency_math():
 def test_lucid_caps():
     assert LUCID.max_total == 10
     assert LUCID.max_funded == 5
-    assert LUCID.eval_pipeline_target <= LUCID.max_total - 3
+    # full 10-eval pipeline: funded accounts free their slot (eval deleted on
+    # funding - operator decision 2026-07-08), so nothing is held back for them
+    assert LUCID.eval_pipeline_target == 10
+    assert LUCID.eval_pipeline_target <= LUCID.max_total
 
 
 def test_apex_gate_parameters():

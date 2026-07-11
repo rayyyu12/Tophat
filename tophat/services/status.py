@@ -54,9 +54,16 @@ def lifecycle_label(cfg: AccountConfig, state: AccountState, *, can_trade: bool 
         kind = "re-nuke" if state.payouts_taken >= 2 else "nuke"
         try_n = state.nuke_tries_this_cycle + 1
         return f"{kind} (try {try_n})"
+    # Number the flip being ATTEMPTED out of the flips this cycle still needs
+    # (same convention as "eval day N" / "try N"). In a nuke cycle the landed
+    # nuke already banked winning day #1, so only need-1 of the winning days
+    # come from flips - the morning after the nuke reads "flip 1/4", not "1/5".
     w = state.winning_days_this_cycle
     need = cfg.winning_days_required
-    return f"flip {w}/{need} (payout {state.payouts_taken + 1})"
+    if is_nuke_cycle(state.payouts_taken):
+        return (f"flip {max(0, w - 1) + 1}/{need - 1} "
+                f"(payout {state.payouts_taken + 1})")
+    return f"flip {w + 1}/{need} (payout {state.payouts_taken + 1})"
 
 
 def today_plan_label(decision_action: str, plan_label: str | None = None) -> str:

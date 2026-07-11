@@ -59,6 +59,10 @@ class Automation:
         self.last_tick: str | None = None
         self.last_result: dict | None = None
         self.last_error: str | None = None
+        # uid -> YYYY-MM-DD the nightly OCO probe last ran. In-memory on purpose:
+        # a restart re-probing the same night is a harmless duplicate check.
+        self._probe_done: dict[int, str] = {}
+        self.last_probe: dict | None = None
 
     def start(self) -> None:
         if self._task is None or self._task.done():
@@ -110,6 +114,24 @@ class Automation:
             out["fired"], out["result"] = True, res
             log.info("automation tick done — uid=%s placed=%s reconciled=%s",  # [debuglog]
                      uid, res.get("orders_placed"), len(res.get("reconciled", [])))
+        # Nightly Auto-OCO probe: one shot per user per night at oco_probe_time
+        # (Sun-Thu, evening session). Marked done even on failure — a probe is
+        # advisory; the morning fire path still alerts on a live rejection. The
+        # stamp is persisted so a restart after the probe won't re-run it.
+        from tophat.services import oco_probe
+        if uid not in self._probe_done:      # cold start: seed from disk
+            self._probe_done[uid] = oco_probe.load_stamp()
+        if settings.auto_execute and oco_probe.probe_due(
+                now, getattr(settings, "oco_probe_time", ""),
+                self._probe_done[uid]):
+            self._probe_done[uid] = now.strftime("%Y-%m-%d")
+            oco_probe.save_stamp(self._probe_done[uid])
+            log.info("nightly OCO probe — uid=%s at %s ET", uid, now.strftime("%H:%M:%S"))
+            try:
+                self.last_probe = await asyncio.to_thread(
+                    oco_probe.run_probe, self.pool_provider(uid), now_et=now)
+            except Exception:
+                log.exception("nightly OCO probe failed uid=%s", uid)
         out["next_delay"] = self._next_entry_delay(datetime.now(ET), settings)
         return out
 

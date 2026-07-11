@@ -87,6 +87,26 @@ def test_settings_roundtrip(client):
     assert client.get("/api/settings").json()["nuke_target_dollars"] == 3_000.0
 
 
+def test_webhook_setting_roundtrip_and_validation(client):
+    url = "https://discord.com/api/webhooks/123/abc"
+    r = client.post("/api/settings", json={"discord_webhook_url": url})
+    assert r.status_code == 200
+    assert client.get("/api/settings").json()["discord_webhook_url"] == url
+    # junk paste is rejected and the stored value survives
+    r = client.post("/api/settings", json={"discord_webhook_url": "http://evil.example/x"})
+    assert r.status_code == 400
+    assert client.get("/api/settings").json()["discord_webhook_url"] == url
+    # clearing turns notifications off
+    r = client.post("/api/settings", json={"discord_webhook_url": ""})
+    assert r.status_code == 200
+    assert client.get("/api/settings").json()["discord_webhook_url"] == ""
+
+
+def test_webhook_test_endpoint_requires_a_url(client):
+    r = client.post("/api/settings/test-webhook", json={})
+    assert r.status_code == 400 and "no webhook" in r.json()["error"]
+
+
 def test_run_preview_places_nothing(client):
     r = client.post("/api/run", json={"execute": False}).json()
     assert r["executed"] is False and r["orders_placed"] == 0

@@ -365,14 +365,41 @@
   .mirror-add{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px;
     align-items:end}
   .mirror-add .btn{height:39px}
+  /* Rabbit status rows + the observed Tradecopia mapping table */
+  .rabbit-row{display:flex;align-items:center;gap:12px;padding:13px 22px;
+    border-bottom:1px solid var(--border);font-size:13px}
+  .rabbit-row:last-child{border-bottom:none}
+  .rabbit-row .grow{flex:1;min-width:0}
+  .rabbit-row .sub2{color:var(--faint);font-size:11.5px;margin-top:3px}
+  .rabbit-row .pill{flex:none}
+  tr.tc-lead td{background:linear-gradient(180deg,var(--surface-2),transparent);
+    border-top:1px solid var(--border);font-size:12.5px;padding-top:10px;padding-bottom:10px}
+  tr.tc-lead:first-child td{border-top:none}
+  .tc-chips{display:flex;flex-wrap:wrap;gap:8px;padding:14px 22px;
+    border-top:1px solid var(--border);font-size:12px;color:var(--muted);align-items:center}
 
   /* ---------- Analytics page ---------- */
   .pill.win{color:var(--long);background:rgba(74,222,128,.12);border-color:rgba(74,222,128,.22)}
   .pill.loss{color:var(--short);background:rgba(251,113,133,.12);border-color:rgba(251,113,133,.22)}
   .pill.flat{color:var(--idle);background:rgba(148,163,184,.12);border-color:rgba(148,163,184,.2)}
-  .chart-legend{display:flex;align-items:center;gap:18px;font-size:12px;color:var(--muted)}
+  .chart-legend{display:flex;align-items:center;gap:14px;font-size:12px;color:var(--muted);flex-wrap:wrap}
   .chart-legend .lg{display:inline-flex;align-items:center;gap:7px}
   .chart-legend .lg i{width:14px;height:3px;border-radius:2px;display:inline-block}
+  .chart-legend button.lg{background:none;border:0;padding:2px 0;color:var(--muted);
+    font:inherit;font-size:12px;cursor:pointer;transition:opacity .15s var(--ease)}
+  .chart-legend button.lg:hover{color:var(--text)}
+  .chart-legend button.lg.off{opacity:.35}
+  .chart-legend button.lg.off i{background:var(--faint)!important}
+  .chart-legend button.lg.nodata{opacity:.35;cursor:default}
+  #anaChart{position:relative}
+  .chart-tip{position:absolute;pointer-events:none;background:var(--surface-2);
+    border:1px solid var(--border-strong);border-radius:10px;padding:9px 11px;
+    font-size:11.5px;display:none;z-index:5;box-shadow:var(--shadow);min-width:160px}
+  .chart-tip .d{color:var(--muted);margin-bottom:5px;font-family:var(--mono)}
+  .chart-tip .r{display:flex;align-items:center;gap:7px;justify-content:space-between;line-height:1.7}
+  .chart-tip .r .sw{width:9px;height:9px;border-radius:2.5px;display:inline-block;flex:none}
+  .chart-tip .r .lb{color:var(--muted);margin-right:10px;white-space:nowrap}
+  .chart-tip .r .v{font-family:var(--mono);color:var(--text);margin-left:auto}
   #anaChart,#simChart{padding:10px 14px 6px}
   #anaChart svg,#simChart svg{display:block;width:100%;height:auto}
   #anaChart text,#simChart text{font-family:var(--mono);font-size:10.5px;fill:var(--faint)}
@@ -491,13 +518,21 @@
           <span class="applied-badge hidden" id="opsApplied">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4"><path d="M20 6 9 17l-5-5"/></svg>
             <span id="opsAppliedAt"></span></span>
-          <button class="btn primary" id="btnApplyPlan">Mark applied in Tradecopia</button>
+          <button class="btn primary" id="btnApplyPlan">Approve tonight's changes</button>
         </div>
       </div>
       <div class="hazards" id="opsHazards"></div>
       <div class="panel" style="margin-bottom:18px">
-        <div class="head"><h2>Today's Copier Plan</h2><span class="muted" id="opsPlanCount"></span></div>
+        <div class="head"><h2>Rabbit</h2><span class="muted" id="opsRabbitMeta"></span></div>
+        <div id="opsRabbit"></div>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Next sync — what Rabbit will change</h2><span class="muted" id="opsPlanCount"></span></div>
         <div id="opsPlanLines"></div>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Tradecopia — live mapping</h2><span class="muted" id="opsTcMeta"></span></div>
+        <div id="opsTcState"></div>
       </div>
       <div class="ops-cards">
         <div class="panel">
@@ -514,7 +549,7 @@
         </div>
       </div>
       <div class="panel">
-        <div class="head"><h2>Mirror mappings</h2><span class="muted" id="opsMirrorMeta"></span></div>
+        <div class="head"><h2>Mirror ledger</h2><span class="muted" id="opsMirrorMeta"></span></div>
         <div id="opsMirrors"></div>
       </div>
     </section>
@@ -585,10 +620,7 @@
       </div>
       <div class="panel" style="margin-bottom:18px">
         <div class="head"><h2>Profit over time</h2>
-          <span class="chart-legend">
-            <span class="lg"><i style="background:var(--flip)"></i>Realized P&amp;L (accounts)</span>
-            <span class="lg"><i style="background:var(--accent)"></i>Payouts banked</span>
-          </span></div>
+          <span class="chart-legend" id="anaLegend"></span></div>
         <div id="anaChart"></div>
       </div>
       <div class="panel" style="margin-bottom:18px">
@@ -820,6 +852,20 @@
         <div class="panel"><div class="head"><h2>Eval</h2></div><div style="padding:18px 22px" id="secEval"></div></div>
         <div class="panel"><div class="head"><h2>Funded - nuke & flip</h2></div><div style="padding:18px 22px" id="secFunded"></div></div>
         <div class="panel"><div class="head"><h2>Automation</h2></div><div style="padding:18px 22px" id="secAuto"></div></div>
+        <div class="panel"><div class="head"><h2>Notifications</h2>
+            <span class="muted">per account — each login has its own</span></div>
+          <div style="padding:18px 22px" id="secNotify"></div></div>
+      </div>
+      <div class="panel" style="margin-top:18px">
+        <div class="head"><h2>Copier boxes</h2>
+          <span class="muted">TopHat Rabbit</span></div>
+        <div class="body" style="padding:18px 22px">
+          <div id="boxList" class="apikey-list"></div>
+          <div class="apikey-add">
+            <input id="newBoxName" placeholder="Box name (e.g. home desk PC)" autocomplete="off" spellcheck="false">
+            <button class="btn primary" id="btnAddBox">Add box</button>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -963,7 +1009,7 @@ document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
   $('#page-sim').classList.toggle('hidden',p!=='sim');
   $('#page-accounts').classList.toggle('hidden',p!=='accounts');
   $('#page-settings').classList.toggle('hidden',p!=='settings');
-  if(p==='settings'){ loadSettings(); loadCredentials(); }
+  if(p==='settings'){ loadSettings(); loadCredentials(); loadBoxes(); }
   if(p==='accounts') loadAccountsPage();
   if(p==='ops') loadOps();
   if(p==='analytics') loadAnalytics();
@@ -1102,6 +1148,8 @@ function buildRow(a){
   const pend = a.pending ? ` · <span class="mono" style="color:var(--warn)">in trade (${a.pending})</span>` : '';
   const statusCls = a.status==='retired' ? 'retire' : a.status;
   const statusLabel = STATUS_LABELS[a.status] || a.status;
+  // Auto-OCO health is checked by the nightly probe (Settings → OCO probe time)
+  // and alerts via Discord — no dashboard badge (operator decision 2026-07-09).
   tr.innerHTML = `
     <td><div class="name">${a.name}</div><div class="muted mono">#${a.account_id}</div></td>
     <td><span class="pill ${statusCls}">${statusLabel}</span></td>
@@ -1358,9 +1406,13 @@ const SCHEMA=[
     ['nuke_entry_time',`Nuke entry time (${localTzAbbr()||'local'})`],
     ['flip_stagger_times',`Flip stagger times (${localTzAbbr()||'local'}, comma-sep)`],
     ['max_nukes_per_day','Max nukes / day'],['max_evals_per_day','Max evals / day'],
+    ['oco_probe_time',`OCO probe time (${localTzAbbr()||'local'})`],
     ['auto_execute','Auto-execute (true/false)'],
     ['auto_disable_on_payout_ready','Auto-disable on payout (true/false)'],
-    ['hedge_guard','Hedge guard (true/false)']]],
+    ['hedge_guard','Hedge guard (true/false)'],
+    ['copier_sync_enabled','Copier sync — Rabbit (true/false)']]],
+  ['secNotify',[
+    ['discord_webhook_url','Discord webhook URL','password']]],
 ];
 // Time fields are entered and shown in the viewer's LOCAL timezone; the backend
 // stores and schedules in ET, so loadSettings/save convert both ways.
@@ -1369,13 +1421,30 @@ async function loadSettings(){
   SETTINGS=await (await jfetch('/api/settings')).json();
   for(const [sec,fields] of SCHEMA){
     const host=$('#'+sec); host.innerHTML='';
-    for(const [key,label] of fields){
+    for(const [key,label,type] of fields){
       let v=SETTINGS[key];
-      if(key==='nuke_entry_time') v=etToLocalHHMM(v);
+      if((key==='nuke_entry_time'||key==='oco_probe_time')&&v) v=etToLocalHHMM(v);
       if(Array.isArray(v)) v=(key==='flip_stagger_times'?v.map(etToLocalHHMM):v).join(', ');
       const f=document.createElement('div'); f.className='field';
-      f.innerHTML=`<label>${label}</label><input data-key="${key}" value="${v}">`;
+      f.innerHTML=`<label>${label}</label><input data-key="${key}" `
+        +(type==='password'?'type="password" autocomplete="off" spellcheck="false" ':'')
+        +`value="${esc(v==null?'':v)}">`;
       host.appendChild(f);
+    }
+    if(sec==='secNotify'){
+      const b=document.createElement('button');
+      b.className='btn'; b.textContent='Send test message'; b.id='btnTestWebhook';
+      b.onclick=async()=>{
+        const url=host.querySelector('[data-key=discord_webhook_url]').value.trim();
+        b.disabled=true; b.textContent='Sending…';
+        try{
+          const r=await jfetch('/api/settings/test-webhook',{method:'POST',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({url})});
+          const d=await r.json().catch(()=>({}));
+          toast(r.ok?'Test message sent - check Discord':(d.error||'Test failed'));
+        } finally { b.disabled=false; b.textContent='Send test message'; }
+      };
+      host.appendChild(b);
     }
   }
 }
@@ -1385,7 +1454,8 @@ $('#btnSave').onclick=async()=>{
     const k=inp.dataset.key; let v=inp.value.trim();
     if(k==='flip_stagger_times') v=v.split(',').map(x=>localToEtHHMM(x.trim())).filter(Boolean);
     else if(k==='nuke_entry_time') v=localToEtHHMM(v);
-    else if(['auto_execute','auto_disable_on_payout_ready','hedge_guard'].includes(k)) v=(v.toLowerCase()==='true');
+    else if(k==='oco_probe_time') v=v?localToEtHHMM(v):'';
+    else if(['auto_execute','auto_disable_on_payout_ready','hedge_guard','copier_sync_enabled'].includes(k)) v=(v.toLowerCase()==='true');
     else if(!isNaN(parseFloat(v))) v=parseFloat(v);
     patch[k]=v;
   });
@@ -1459,6 +1529,73 @@ $('#btnAddKey').onclick=async()=>{
   renderCredentials(); toast('API key added'); refresh();
 };
 $('#newApiKey').addEventListener('keydown',e=>{ if(e.key==='Enter') $('#btnAddKey').click(); });
+
+// ---- copier boxes (TopHat Rabbit pairing) ----
+async function loadBoxes(){
+  let d; try{ d=await (await jfetch('/api/boxes')).json(); }catch(e){ return; }
+  const host=$('#boxList'); host.innerHTML='';
+  const boxes=d.boxes||[];
+  if(!boxes.length){
+    host.innerHTML=`<div class="muted" style="font-size:12.5px">No boxes paired yet.
+      A box is a machine running Tradecopia + the Rabbit bridge service; pairing it
+      here mints the token its rabbit_config.json needs.</div>`;
+  }
+  for(const b of boxes){
+    const meta=`token ${esc(b.hint)} · added ${esc(b.created_at)}`
+      +(b.last_seen?` · last check-in ${esc(b.last_seen)}`:' · never checked in')
+      +(b.last_result?` · last apply: ${esc(b.last_result)}${b.last_plan_date?' ('+esc(b.last_plan_date)+')':''}`:'');
+    const card=document.createElement('div'); card.className='apikey-card';
+    card.innerHTML=`<div class="who"><div class="u">${esc(b.name)}</div><div class="meta">${meta}</div></div>
+      <div class="keybox">
+        <button class="btn sm js-sync"${b.sync_requested?' disabled':''}>${b.sync_requested?'Sync pending…':'Sync now'}</button>
+        <button class="iconbtn danger js-del" title="Revoke box token">${TRASH}</button>
+      </div>`;
+    card.querySelector('.js-sync').onclick=async()=>{
+      const r=await jfetch(`/api/boxes/${encodeURIComponent(b.box_id)}/sync`,{method:'POST'});
+      if(r.ok){ toast('Sync requested - the box picks it up within a minute'); loadBoxes(); }
+      else toast('Could not request sync');
+    };
+    card.querySelector('.js-del').onclick=async()=>{
+      const ok=await confirmModal({title:'Revoke box?',
+        body:`"${b.name}" stops pulling plans immediately and needs a new token to re-pair.`,
+        confirmText:'Revoke', danger:true});
+      if(!ok) return;
+      await jfetch(`/api/boxes/${encodeURIComponent(b.box_id)}`,{method:'DELETE'});
+      loadBoxes(); toast('Box revoked');
+    };
+    host.appendChild(card);
+  }
+  if(d.last_status && d.last_status.result){
+    const s=d.last_status, div=document.createElement('div');
+    div.className='hint'; div.style.marginTop='10px';
+    div.textContent=`Last apply: ${s.result} — ${s.detail||''} (plan ${s.plan_date||'?'}, finished ${s.finished_at||'?'})`;
+    host.appendChild(div);
+  }
+  try{
+    const o=await (await jfetch('/api/ops/tc-observed/last')).json();
+    if(o && o.received_at){
+      const s=o.summary||{}, div=document.createElement('div');
+      div.className='hint'; div.style.marginTop='6px';
+      div.textContent=`Last reverse sync ${o.received_at}: `
+        +`${s.booked||0} booked, ${s.anchored||0} anchored, ${s.stale||0} stale, `
+        +`${s.needs_anchor||0} need anchor, ${s.proposed||0} proposed onboardings`;
+      host.appendChild(div);
+    }
+  }catch(e){}
+}
+$('#btnAddBox').onclick=async()=>{
+  const name=$('#newBoxName').value.trim();
+  if(!name){ toast('Name the box first'); return; }
+  const r=await jfetch('/api/boxes',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({name})});
+  const d=await r.json();
+  if(!r.ok){ toast(d.error||'Could not add box'); return; }
+  $('#newBoxName').value='';
+  loadBoxes();
+  await promptModal({title:'Box token — copy it now',
+    body:'Paste into the box\'s rabbit_config.json as "box_token". This is the only time it is shown.',
+    confirmText:'Done', value:d.token});
+};
 
 // ---- accounts editor ----
 const PRESETS = {
@@ -1594,30 +1731,33 @@ $('#btnSaveAcct').onclick = async()=>{
 let OPS_PLAN=null, OPS_MIRRORS=[];
 const FIRM_SHORT={'lucid-50k':'Lucid','tradeify-50k':'Tradeify','apex-50k':'Apex'};
 const PHASE_PILL={eval:'eval',funded:'flip',waiting:'idle',passed:'passed',blown:'blown',retired:'retire'};
+// Rabbit apply outcome -> pill tone (green good, gray nothing-to-do, red trouble)
+const RESULT_PILL={applied:'active',noop:'flat',planned:'idle',aborted:'inactive',
+  rolled_back:'inactive','gave-up':'inactive'};
+const fmtMult=x=>Number(x).toFixed(2).replace(/\.?0+$/,'');
 
 async function loadOps(){
-  try{
-    const [plan, mir] = await Promise.all([
-      (await jfetch('/api/copier-plan')).json(),
-      (await jfetch('/api/mirrors')).json(),
-    ]);
-    OPS_PLAN=plan; OPS_MIRRORS=mir.mirrors||[];
-    renderOps(plan, mir);
-  }catch(e){ $('#opsSub').textContent='could not load the copier plan'; }
+  const grab=u=>jfetch(u).then(r=>r.json()).catch(()=>null);
+  const [plan, mir, boxes, obs] = await Promise.all([
+    grab('/api/copier-plan'), grab('/api/mirrors'),
+    grab('/api/boxes'), grab('/api/ops/tc-observed/last')]);
+  if(!plan){ $('#opsSub').textContent='could not load the copier plan'; return; }
+  OPS_PLAN=plan; OPS_MIRRORS=(mir&&mir.mirrors)||[];
+  renderOps(plan, boxes||{boxes:[],last_status:null}, obs||{});
 }
 
-function renderOps(plan, mir){
+function renderOps(plan, boxesData, obs){
   const nMap=plan.lines.filter(x=>x.action!=='BUY').length;
-  $('#opsSub').textContent=`Daily copier orchestration · ${nMap} copier edit${nMap===1?'':'s'} · ${OPS_MIRRORS.length} mirror${OPS_MIRRORS.length===1?'':'s'}`;
+  $('#opsSub').textContent=`Rabbit keeps Tradecopia matched to this page · ${nMap} change${nMap===1?'':'s'} queued · ${OPS_MIRRORS.length} mirror${OPS_MIRRORS.length===1?'':'s'}`;
   const applied=!!plan.applied_at;
   $('#opsApplied').classList.toggle('hidden',!applied);
-  $('#opsAppliedAt').textContent=applied?`applied ${etStampToLocal(plan.applied_at)}`:'';
-  // An applied plan re-solves to zero edit lines, so any lines that appear AFTER
-  // applying are NEW edits (mirror added, account toggled) - re-arm the button.
+  $('#opsAppliedAt').textContent=applied?`approved ${etStampToLocal(plan.applied_at)}`:'';
+  // An approved plan re-solves to zero edit lines, so any lines that appear AFTER
+  // approval are NEW edits (mirror added, account toggled) - re-arm the button.
   const btn=$('#btnApplyPlan');
   btn.disabled=applied && !nMap;
-  btn.textContent=(applied && !nMap)?'Applied for today'
-    :applied?'Mark new edits applied':'Mark applied in Tradecopia';
+  btn.textContent=(applied && !nMap)?'Approved for today'
+    :applied?'Approve new edits':"Approve tonight's changes";
 
   // hazards strip: per-mirror operator warnings from inferred state. The edge
   // color and tag are the SEVERITY (danger/action/warning/info), not the firm.
@@ -1631,12 +1771,16 @@ function renderOps(plan, mir){
     hz.appendChild(d);
   }
 
-  // plan lines
+  renderRabbit(boxesData, obs);
+
+  // plan lines: the queue Rabbit drains at its next sync
   const host=$('#opsPlanLines'); host.innerHTML='';
   const lines=plan.lines.filter(x=>x.action!=='BUY');
-  $('#opsPlanCount').textContent=lines.length?`${lines.length} line${lines.length===1?'':'s'}`:'';
+  $('#opsPlanCount').textContent=lines.length
+    ?`${lines.length} change${lines.length===1?'':'s'}${applied?' · approved':' · awaiting approval'}`:'';
   if(!lines.length){
-    host.innerHTML=`<div style="padding:22px" class="muted">No changes today - yesterday's mappings carry over.</div>`;
+    host.innerHTML=`<div style="padding:22px" class="muted">Nothing queued - Tradecopia already matches
+      TopHat's desired mapping, so the next sync is a no-op.</div>`;
   }
   for(const l of lines){
     const d=document.createElement('div');
@@ -1645,6 +1789,8 @@ function renderOps(plan, mir){
       <div class="what">${esc(l.detail)}<div class="why">${esc(l.reason)}</div></div>`;
     host.appendChild(d);
   }
+
+  renderTcState(obs, plan);
 
   // buys
   const buys=$('#opsBuys'); buys.innerHTML='';
@@ -1748,17 +1894,164 @@ function renderOps(plan, mir){
   }
 }
 
+// Rabbit panel: is the box alive, when does it fire, how did the last sync go
+function renderRabbit(d, obs){
+  const host=$('#opsRabbit'); host.innerHTML='';
+  const boxes=d.boxes||[];
+  $('#opsRabbitMeta').textContent=boxes.length?`${boxes.length} box${boxes.length===1?'':'es'} paired`:'';
+  if(!boxes.length){
+    host.innerHTML=`<div style="padding:22px" class="muted">No Rabbit box is paired - pair the
+      Tradecopia machine in <b>Settings → Copier boxes</b>. Until then, approve the plan here
+      and make the edits in Tradecopia by hand.</div>`;
+    return;
+  }
+  for(const b of boxes){
+    // box flag-polls every ~60s; three missed polls = offline
+    const on=b.seen_ago_s!=null && b.seen_ago_s<180;
+    const next=b.sync_requested?'sync pending - picked up within a minute'
+      :b.apply_at?`next scheduled apply ${locNote(b.apply_at+' ET')} nightly`
+      :'apply schedule unknown until the box first checks in';
+    const row=document.createElement('div');
+    row.className='rabbit-row';
+    row.innerHTML=`<span class="pill ${on?'active':'inactive'}">${on?'online':'offline'}</span>
+      <div class="grow"><b>${esc(b.name)}</b>
+        <div class="sub2">${b.last_seen?`last check-in ${etStampToLocal(b.last_seen)}`:'never checked in'} · ${esc(next)}</div></div>
+      <button class="btn sm"${b.sync_requested?' disabled':''} onclick="opsSyncNow('${esc(b.box_id)}')">${b.sync_requested?'Sync pending…':'Sync now'}</button>`;
+    host.appendChild(row);
+  }
+  const s=d.last_status;
+  if(s && s.result){
+    const row=document.createElement('div');
+    row.className='rabbit-row';
+    row.innerHTML=`<span class="pill ${RESULT_PILL[s.result]||'idle'}">${esc(s.result)}</span>
+      <div class="grow">last sync${s.plan_date?` · plan ${esc(s.plan_date)}`:''}${s.finished_at?` · finished ${esc(String(s.finished_at).replace('T',' ').slice(0,16))}`:''}
+        <div class="sub2">${esc(s.detail||'')}</div></div>`;
+    host.appendChild(row);
+  }
+  if(obs && obs.received_at){
+    const sm=obs.summary||{};
+    const row=document.createElement('div');
+    row.className='rabbit-row';
+    row.innerHTML=`<span class="pill flat">observed</span>
+      <div class="grow">last balance report ${esc(etStampToLocal(obs.received_at))}
+        <div class="sub2">${sm.booked||0} booked · ${sm.anchored||0} anchored · ${sm.stale||0} stale ·
+          ${sm.needs_anchor||0} need anchor · ${sm.proposed||0} proposed onboarding${(sm.proposed||0)===1?'':'s'}</div></div>`;
+    host.appendChild(row);
+  }
+}
+
+async function opsSyncNow(bid){
+  const r=await jfetch(`/api/boxes/${encodeURIComponent(bid)}/sync`,{method:'POST'});
+  if(r.ok){ toast('Sync requested - Rabbit picks it up within a minute'); loadOps(); }
+  else toast('Could not request sync');
+}
+
+// The truth table: Tradecopia's copier arrangement exactly as Rabbit last saw it,
+// each follower badged with what the next sync does to it.
+function renderTcState(obs, plan){
+  const host=$('#opsTcState'); host.innerHTML='';
+  const groups=obs.groups||[], accts=obs.accounts||[];
+  $('#opsTcMeta').textContent=obs.received_at?`as reported by Rabbit · ${etStampToLocal(obs.received_at)}`:'';
+  if(!obs.received_at){
+    host.innerHTML=`<div style="padding:22px" class="muted">Rabbit has not reported yet - this table
+      fills in after its first sync and refreshes on every one (nightly and Sync now).</div>`;
+    return;
+  }
+  const names=plan.leader_names||{};
+  const byNum={}; for(const m of OPS_MIRRORS) if(m.account_number) byNum[m.account_number]=m;
+  const acctByName={}; for(const a of accts) acctByName[a.name]=a;
+  // desired world: approved plan overrides, else the mirrors store (same rule
+  // as the ledger below); inactive/terminal mirrors are desired-unmapped
+  const desiredOf=m=>{
+    const d=(plan.desired||{})[m.mirror_id];
+    const lid=d?d.leader_id:m.leader_id;
+    const mult=d?d.multiplier:m.multiplier;
+    const active=m.enabled!==false && ['eval','funded'].includes(m.phase) && lid!=null;
+    return {active, leader:lid==null?null:(names[lid]||`#${lid}`), mult};
+  };
+  const desiredLeaders=new Set();
+  for(const m of OPS_MIRRORS){ const w=desiredOf(m); if(w.active) desiredLeaders.add(w.leader); }
+
+  if(!groups.length){
+    const legacy=!('groups' in obs);
+    host.innerHTML=`<div style="padding:22px" class="muted">No copier groups observed in Tradecopia${accts.length?` (${accts.length} follower account${accts.length===1?'':'s'} connected but not copying)`:''}.
+      ${legacy?'The paired Rabbit predates topology reporting - update rabbit/ on the box and re-sync.':''}</div>`;
+    return;
+  }
+  const observedFollowers=new Set();
+  let rows='';
+  for(const g of groups){
+    const gLead=desiredLeaders.has(g.leader)?''
+      :' <span class="pill blown" title="no active mirror wants this leader">group drops at next sync</span>';
+    const gStatus=g.status && g.status!=='active'?` <span class="pill idle">${esc(g.status)}</span>`:'';
+    rows+=`<tr class="tc-lead"><td colspan="8"><span class="pill flip">leader</span>
+      &nbsp;<b class="mono">${esc(g.leader||'?')}</b>
+      <span class="muted"> · ${esc(g.group||'')} · ${g.followers.length} follower${g.followers.length===1?'':'s'}</span>${gStatus}${gLead}</td></tr>`;
+    for(const f of g.followers){
+      observedFollowers.add(f.account);
+      const m=byNum[f.account];
+      const a=acctByName[f.account];
+      let badge;
+      if(!m) badge=`<span class="pill idle" title="no mirror has this account number - see proposed onboardings">not in TopHat</span>`;
+      else{
+        const w=desiredOf(m);
+        if(!w.active) badge=`<span class="pill blown">unmaps at next sync</span>`;
+        else if(w.leader!==g.leader) badge=`<span class="pill eval">moves → ${esc(w.leader)}</span>`;
+        else if(Math.abs(w.mult-f.scale)>0.005) badge=`<span class="pill eval">rescales → ${fmtMult(w.mult)}×</span>`;
+        else if(!f.replicate) badge=`<span class="pill eval">re-enables replication</span>`;
+        else badge=`<span class="pill passed">in sync</span>`;
+      }
+      rows+=`<tr class="${m&&['blown','retired'].includes(m.phase)?'dim':''}">
+        <td><div class="name">${esc(m?(m.alias||f.account):f.account)}</div>
+          <div class="muted mono">${esc(f.account)}</div></td>
+        <td>${m?`<span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span>`:'<span class="muted">—</span>'}</td>
+        <td class="mono">${fmtMult(f.scale)}×</td>
+        <td class="mono">${f.replicate?'on':'<span style="color:var(--warn)">off</span>'}</td>
+        <td>${a?(a.connected?'<span class="pill active">yes</span>':'<span class="pill inactive">no</span>'):'<span class="muted">—</span>'}</td>
+        <td class="mono">${a?`$${Number(a.balance).toLocaleString(undefined,{maximumFractionDigits:0})}`:'—'}</td>
+        <td class="muted mono">${esc(a?String(a.updated_at||'').slice(0,16):'')}</td>
+        <td>${badge}</td></tr>`;
+    }
+  }
+  const wrap=document.createElement('div');
+  wrap.className='tablewrap';
+  wrap.innerHTML=`<table style="min-width:820px"><thead><tr>
+    <th>Follower</th><th>Phase</th><th>Scale</th><th>Repl</th><th>Conn</th>
+    <th>Balance</th><th>Updated</th><th>Next sync</th></tr></thead><tbody>${rows}</tbody></table>`;
+  host.appendChild(wrap);
+  // desired mappings Tradecopia does not have yet (Rabbit adds them at next sync)
+  const pending=OPS_MIRRORS.filter(m=>{
+    const w=desiredOf(m);
+    return w.active && m.account_number && !observedFollowers.has(m.account_number);
+  }).map(m=>{const w=desiredOf(m);return `${esc(m.alias||m.account_number)} → ${esc(w.leader)} @ ${fmtMult(w.mult)}×`;});
+  if(pending.length){
+    const div=document.createElement('div');
+    div.className='tc-chips';
+    div.innerHTML=`<span class="pill long">maps at next sync</span> ${pending.join(' · ')}`;
+    host.appendChild(div);
+  }
+  const idle=accts.filter(a=>!observedFollowers.has(a.name)).map(a=>esc(a.name));
+  if(idle.length){
+    const div=document.createElement('div');
+    div.className='tc-chips';
+    div.innerHTML=`<span class="pill flat">connected, not copying</span> <span class="mono">${idle.join(' · ')}</span>`;
+    host.appendChild(div);
+  }
+}
+
 $('#btnApplyPlan').onclick=async()=>{
   const n=OPS_PLAN?OPS_PLAN.lines.filter(x=>x.action!=='BUY').length:0;
   const ok=await confirmModal({
-    title:'Mark the copier plan applied?',
-    body:`Confirm you have made ${n===1?'this edit':`these ${n} edits`} in Tradecopia. `+
-      `TopHat will assume the new mappings are live and track follower accounts accordingly.`,
-    confirmText:'Applied'});
+    title:'Approve the copier plan?',
+    body:`TopHat records ${n===1?'this change':`these ${n} changes`} as the desired copier state `+
+      `and flags Rabbit. Rabbit rewrites Tradecopia to match at its next cycle - `+
+      `tonight's scheduled apply, or Sync now.`,
+    confirmText:'Approve'});
   if(!ok) return;
   const r=await (await jfetch('/api/copier-plan/apply',{method:'POST'})).json();
   OPS_PLAN=r;
-  toast('Copier plan applied');
+  toast(r.boxes_flagged?`Plan approved - ${r.boxes_flagged} Rabbit box${r.boxes_flagged===1?'':'es'} flagged to sync`
+    :'Plan approved - pair a Rabbit box to automate the edits');
   loadOps();
 };
 
@@ -1901,17 +2194,38 @@ function niceStep(raw){
   return 10*mag;
 }
 
-// static two-series SVG line chart - no libraries, themed via CSS variables
-function profitChartSvg(pts){
-  if(!pts || pts.length<2)
-    return `<div style="padding:26px 10px" class="muted">Not enough history yet.</div>`;
-  const W=900,H=260,PL=68,PR=18,PT=14,PB=30;
-  const vals=pts.flatMap(p=>[p.realized_cum,p.banked_cum]);
+// multi-series SVG line chart - no libraries. One fixed color per series KEY
+// (identity never repaints when a filter hides a neighbor); palette validated
+// for CVD separation + contrast on the dark surface (2026-07-08).
+const ANA_COLORS={topstep:'#419ac0',apex:'#a772dc',lucid:'#b38716',
+  tradeify:'#d3619d',total:'#d17149',banked:'#1ba695'};
+let ANA_OFF; try{ ANA_OFF=new Set(JSON.parse(localStorage.getItem('anaSeriesOff')||'[]')); }
+catch(e){ ANA_OFF=new Set(); }
+let ANA_CURVES=null, ANA_META={trades_recorded:0};
+const ANA_GEOM={W:900,H:260,PL:68,PR:18,PT:14,PB:30};
+
+function anaVisible(){
+  return ((ANA_CURVES&&ANA_CURVES.series)||[]).filter(s=>s.has_data&&!ANA_OFF.has(s.key));
+}
+function anaChartSvg(c){
+  const on=anaVisible(), n=(c.dates||[]).length;
+  if(n<2||!on.length){
+    let msg;
+    if(n>=2) msg='All series hidden - click a legend item to show it.';
+    else if(n===1) msg=`First chartable day recorded (${esc(c.dates[0])}).`;
+    else if(ANA_META.trades_recorded>0)
+      msg=`${ANA_META.trades_recorded} recorded trade${ANA_META.trades_recorded===1?'':'s'} so far, all evals - evals don't chart (tickets, not profit). `
+        +'The chart starts with the first funded trade, funded mirror day, or payout.';
+    else msg='No history yet - the chart starts with the first funded trade or payout.';
+    return `<div style="padding:26px 10px" class="muted">${msg}</div>`;
+  }
+  const {W,H,PL,PR,PT,PB}=ANA_GEOM;
+  const vals=on.flatMap(s=>s.cum);
   let lo=Math.min(0,...vals), hi=Math.max(0,...vals);
   if(hi===lo) hi=lo+1;
   const step=niceStep((hi-lo)/4);
   lo=Math.floor(lo/step)*step; hi=Math.ceil(hi/step)*step;
-  const X=i=>PL+(W-PL-PR)*i/(pts.length-1);
+  const X=i=>PL+(W-PL-PR)*i/(n-1);
   const Y=v=>PT+(H-PT-PB)*(1-(v-lo)/(hi-lo));
   let g='';
   for(let v=lo;v<=hi+1e-9;v+=step){
@@ -1920,19 +2234,64 @@ function profitChartSvg(pts){
       stroke="rgba(235,180,140,${zero?'.22':'.07'})" stroke-width="1"/>
       <text x="${PL-9}" y="${y+3.5}" text-anchor="end">${usdSigned(v)}</text>`;
   }
-  const xticks=[0,Math.floor((pts.length-1)/2),pts.length-1];
-  for(const i of new Set(xticks))
-    g+=`<text x="${X(i)}" y="${H-9}" text-anchor="${i===0?'start':i===pts.length-1?'end':'middle'}">${pts[i].date}</text>`;
-  const line=(key,color)=>{
-    const d=pts.map((p,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(p[key]).toFixed(1)}`).join('');
-    const last=pts[pts.length-1];
-    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2"
+  for(const i of new Set([0,Math.floor((n-1)/2),n-1]))
+    g+=`<text x="${X(i)}" y="${H-9}" text-anchor="${i===0?'start':i===n-1?'end':'middle'}">${c.dates[i]}</text>`;
+  const lines=on.map(s=>{
+    const d=s.cum.map((v,i)=>`${i?'L':'M'}${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join('');
+    return `<path d="${d}" fill="none" stroke="${ANA_COLORS[s.key]||'#888'}" stroke-width="2"
         stroke-linejoin="round" stroke-linecap="round"/>
-      <circle cx="${X(pts.length-1)}" cy="${Y(last[key])}" r="3.5" fill="${color}"/>`;
-  };
+      <circle cx="${X(n-1)}" cy="${Y(s.cum[n-1])}" r="3.5" fill="${ANA_COLORS[s.key]||'#888'}"/>`;
+  }).join('');
   return `<svg viewBox="0 0 ${W} ${H}" xmlns="http://www.w3.org/2000/svg" role="img"
-      aria-label="Cumulative profit over time">${g}
-    ${line('realized_cum','var(--flip)')}${line('banked_cum','var(--accent)')}</svg>`;
+      aria-label="Cumulative funded profit per firm and banked payouts over time">${g}${lines}
+    <line id="anaXhair" y1="${PT}" y2="${H-PB}" stroke="rgba(235,180,140,.35)"
+      stroke-width="1" stroke-dasharray="3 3" visibility="hidden"/>
+    <rect id="anaHit" x="${PL}" y="${PT}" width="${W-PL-PR}" height="${H-PT-PB}"
+      fill="transparent"/></svg>
+    <div class="chart-tip" id="anaTip"></div>`;
+}
+function renderAnaLegend(){
+  const host=$('#anaLegend'), series=(ANA_CURVES&&ANA_CURVES.series)||[];
+  host.innerHTML=series.map(s=>{
+    const off=ANA_OFF.has(s.key), nodata=!s.has_data;
+    return `<button class="lg ${off?'off':''} ${nodata?'nodata':''}" data-k="${s.key}"
+      title="${nodata?'no data yet':(off?'click to show':'click to hide')}"
+      aria-pressed="${!off}"><i style="background:${ANA_COLORS[s.key]||'#888'}"></i>
+      ${esc(s.label)}${nodata?' <span class="muted">·&nbsp;no data</span>':''}</button>`;
+  }).join('');
+  host.querySelectorAll('button.lg').forEach(b=>b.onclick=()=>{
+    const k=b.dataset.k;
+    ANA_OFF.has(k)?ANA_OFF.delete(k):ANA_OFF.add(k);
+    localStorage.setItem('anaSeriesOff',JSON.stringify([...ANA_OFF]));
+    renderAnaChart();
+  });
+}
+function renderAnaChart(){
+  renderAnaLegend();
+  const c=ANA_CURVES||{dates:[],series:[]};
+  $('#anaChart').innerHTML=anaChartSvg(c);
+  const hit=document.getElementById('anaHit');
+  if(!hit) return;
+  const svg=hit.ownerSVGElement, tip=$('#anaTip'), xh=document.getElementById('anaXhair');
+  const {W,PL,PR}=ANA_GEOM, n=c.dates.length, on=anaVisible();
+  const move=ev=>{
+    const r=svg.getBoundingClientRect();
+    const xv=(ev.clientX-r.left)*W/r.width;                    // px -> viewBox
+    const i=Math.max(0,Math.min(n-1,Math.round((xv-PL)/(W-PL-PR)*(n-1))));
+    const x=PL+(W-PL-PR)*i/(n-1);
+    xh.setAttribute('x1',x); xh.setAttribute('x2',x); xh.setAttribute('visibility','visible');
+    tip.innerHTML=`<div class="d">${esc(c.dates[i])}</div>`+on.map(s=>
+      `<div class="r"><span class="sw" style="background:${ANA_COLORS[s.key]}"></span>
+       <span class="lb">${esc(s.label)}</span><span class="v">${usdSigned(s.cum[i])}</span></div>`).join('');
+    tip.style.display='block';
+    const cw=$('#anaChart').getBoundingClientRect(), xpx=x*r.width/W;
+    const left=xpx>cw.width/2 ? xpx-tip.offsetWidth-14 : xpx+14;
+    tip.style.left=Math.max(0,left)+'px';
+    tip.style.top='12px';
+  };
+  const out=()=>{ tip.style.display='none'; xh.setAttribute('visibility','hidden'); };
+  hit.addEventListener('mousemove',move);
+  hit.addEventListener('mouseleave',out);
 }
 
 function renderAnalytics(a){
@@ -1948,7 +2307,9 @@ function renderAnalytics(a){
     ?`<span class="muted">-</span>`
     :`${pct(f.pass_rate)} <span class="muted" style="font-size:13px">model ${pct(f.model_pass)}</span>`;
 
-  $('#anaChart').innerHTML=profitChartSvg(a.curve);
+  ANA_CURVES=a.curves||{dates:[],series:[]};
+  ANA_META={trades_recorded:a.trades_recorded||0};
+  renderAnaChart();
 
   // win-rate table: legs with live trades first, model-only legs greyed below
   const legs=(a.legs||[]);
@@ -2316,8 +2677,8 @@ function connectWS(){
   }catch(e){setInterval(refresh,5000);}
 }
 refresh(); connectWS(); setInterval(pollAuto, 15000);
-// keep Operations live while it's the visible page (plan + inferred states move
-// as reconciles land); cheap - two cached API reads
+// keep Operations live while it's the visible page (plan, Rabbit heartbeat and
+// the observed Tradecopia state all move); cheap - four small API reads
 setInterval(()=>{ if(CUR_PAGE==='ops') loadOps(); }, 20000);
 // Analytics refreshes on the same cadence while visible (one cheap file read)
 setInterval(()=>{ if(CUR_PAGE==='analytics') loadAnalytics(); }, 20000);

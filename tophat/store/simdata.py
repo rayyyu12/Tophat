@@ -14,6 +14,7 @@ load). Bars load once per process; day views are cached per entry time.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import dataclass
 from pathlib import Path
@@ -55,6 +56,7 @@ class DayView:
 _LOCK = threading.Lock()
 _BARS: list[DayBars] | None = None
 _BARS_PATH: Path | None = None
+_BARS_STAT: list[int] | None = None   # (mtime_ns, size) at load time
 _VIEWS: dict[str, list[DayView]] = {}
 
 
@@ -64,18 +66,22 @@ def available(path: Path = SIM_BARS_FILE) -> bool:
 
 def reset_cache() -> None:
     """Drop the in-process bar cache (tests; after regenerating the parquet)."""
-    global _BARS, _BARS_PATH
+    global _BARS, _BARS_PATH, _BARS_STAT
     with _LOCK:
         _BARS = None
         _BARS_PATH = None
+        _BARS_STAT = None
         _VIEWS.clear()
 
 
 def load_days(path: Path = SIM_BARS_FILE) -> list[DayBars]:
-    """All cached days, oldest first. Loaded once per process per path."""
-    global _BARS, _BARS_PATH
+    """All cached days, oldest first. Cached in-process, keyed to the file's
+    (mtime, size) so a tick import (import_ticks.py) is picked up on the next
+    read without a server restart."""
+    global _BARS, _BARS_PATH, _BARS_STAT
     with _LOCK:
-        if _BARS is not None and _BARS_PATH == path:
+        stat = _stat_key(path)
+        if _BARS is not None and _BARS_PATH == path and _BARS_STAT == stat:
             return _BARS
         import pandas as pd
         df = pd.read_parquet(path)
@@ -92,7 +98,7 @@ def load_days(path: Path = SIM_BARS_FILE) -> list[DayBars]:
                 low=g["low"].to_numpy(dtype=float),
                 close=g["close"].to_numpy(dtype=float),
             ))
-        _BARS, _BARS_PATH = days, path
+        _BARS, _BARS_PATH, _BARS_STAT = days, path, stat
         _VIEWS.clear()
         return days
 
@@ -128,11 +134,59 @@ def day_views(entry_hhmm: str, path: Path = SIM_BARS_FILE) -> list[DayView]:
     return views
 
 
+def _sidecar(path: Path) -> Path:
+    return path.with_suffix(".coverage.json")
+
+
+def _stat_key(path: Path) -> list[int]:
+    st = path.stat()
+    return [st.st_mtime_ns, st.st_size]
+
+
+def _read_sidecar(path: Path) -> dict | None:
+    """Coverage from the sidecar JSON, or None when absent/stale (stat mismatch)."""
+    try:
+        raw = json.loads(_sidecar(path).read_text(encoding="utf-8"))
+        if raw.get("stat") != _stat_key(path):
+            return None
+        return {"available": True, "days": int(raw["days"]),
+                "date_from": str(raw["date_from"]), "date_to": str(raw["date_to"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def write_coverage_sidecar(path: Path = SIM_BARS_FILE) -> dict:
+    """Persist coverage metadata next to the parquet (loads the bars if needed).
+
+    Called by the tick-import tool after a rebuild and lazily after any full
+    load. Best-effort write: a read-only deployment simply keeps paying the
+    full load. Stat is taken BEFORE the load so a concurrent rewrite can only
+    make the sidecar stale, never wrong."""
+    stat = _stat_key(path)
+    days = load_days(path)
+    cov = {"available": True, "days": len(days),
+           "date_from": days[0].date if days else "",
+           "date_to": days[-1].date if days else ""}
+    try:
+        _sidecar(path).write_text(
+            json.dumps({"stat": stat, **{k: cov[k] for k in
+                                         ("days", "date_from", "date_to")}}),
+            encoding="utf-8")
+    except OSError:
+        pass
+    return cov
+
+
 def coverage(path: Path = SIM_BARS_FILE) -> dict:
-    """Availability metadata for the UI (no exception when the cache is absent)."""
+    """Availability metadata for the UI (no exception when the cache is absent).
+
+    Loading the multi-million-row parquet just to report a day count made the
+    Simulation tab take seconds to open, so the answer is cached in a sidecar
+    JSON keyed to the parquet's (mtime, size) and only a cache miss pays the
+    full load (which then refreshes the sidecar)."""
     if not available(path):
         return {"available": False, "days": 0, "date_from": "", "date_to": ""}
-    days = load_days(path)
-    return {"available": True, "days": len(days),
-            "date_from": days[0].date if days else "",
-            "date_to": days[-1].date if days else ""}
+    cached = _read_sidecar(path)
+    if cached is not None:
+        return cached
+    return write_coverage_sidecar(path)

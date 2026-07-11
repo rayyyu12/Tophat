@@ -16,6 +16,28 @@ def pts_to_ticks(points: float) -> int:
     return max(1, round(points / NQ_TICK))
 
 
+def probe_order(limit_price: float) -> dict:
+    """A far-out-of-the-money 1-lot LIMIT BUY carrying both bracket legs.
+
+    Used by the nightly Auto-OCO probe: with the account on "Position Brackets"
+    the place call rejects with error 2 BEFORE any order rests (that's the
+    detection); with "Auto OCO Brackets" it's accepted and the caller cancels
+    it immediately. The limit sits ~100pts below market so it cannot fill in
+    the second it exists."""
+    px = round(limit_price / NQ_TICK) * NQ_TICK   # exchange requires tick-aligned prices
+    return {
+        "type": ORDER_LIMIT,
+        "side": SIDE_BID,
+        "size": 1,
+        "limitPrice": px,
+        "stopPrice": None,
+        "trailPrice": None,
+        "isAutomated": True,
+        "stopLossBracket": {"ticks": -pts_to_ticks(10), "type": ORDER_STOP},
+        "takeProfitBracket": {"ticks": pts_to_ticks(10), "type": ORDER_LIMIT},
+    }
+
+
 def plan_to_order(plan: TradePlan) -> dict:
     side = SIDE_BID if plan.direction == 1 else SIDE_ASK
     # ProjectX bracket `ticks` is a SIGNED offset from entry (above entry = +, below = -):

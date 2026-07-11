@@ -58,7 +58,13 @@ class MirrorAccount:
     last_outcome_date: str = ""    # last propagated trading day
     last_day_pnl: float = 0.0      # last booked day P&L (nuke-landed detection, UI)
     last_nuke_date: str = ""       # last day this mirror held the apex nuke slot
-    last_verified: str = ""        # last manual balance sync (YYYY-MM-DD)
+    last_verified: str = ""        # last balance sync, manual or observed (YYYY-MM-DD)
+    # Absolute Tradecopia balance at the START of the current phase — the anchor
+    # that converts an observed absolute balance into profit-relative equity
+    # (reverse sync, plan doc §13.4.1). None = not captured yet; the importer
+    # refuses to book balances without it (except on a fresh, untraded phase,
+    # where it captures the first observation as the anchor).
+    start_balance: float | None = None
     notes: str = ""
     created_at: float = 0.0
 
@@ -184,6 +190,7 @@ _PATCHABLE = {
     "account_number", "alias", "leader_id", "multiplier", "channel", "phase",
     "enabled", "equity", "peak", "days_traded", "win_days", "window_profit",
     "best_day", "eval_best_day", "payouts_taken", "payout_ready", "notes",
+    "start_balance",
 }
 
 
@@ -216,6 +223,8 @@ def patch_mirror(mirror_id: str, patch: dict, *, today: str = "",
                 setattr(m, k, int(v))
             elif k in ("account_number", "alias", "notes"):
                 setattr(m, k, str(v).strip())
+            elif k == "start_balance":
+                m.start_balance = None if v is None else float(v)
             else:
                 setattr(m, k, float(v))
         if patch.get("sync_balance") is not None:

@@ -8,10 +8,11 @@ TODAY = "2026-07-06"
 
 
 def L(aid, program="eval", phase="eval", enabled=True, can_trade=True,
-      signal_plan="", days=0, name=None):
+      signal_plan="", days=0, name=None, near_floor=False, owner=""):
     return cp.Leader(account_id=aid, name=name or f"TS-{aid}", program=program,
                      phase=phase, enabled=enabled, can_trade=can_trade,
-                     signal_plan=signal_plan, days_traded=days)
+                     signal_plan=signal_plan, days_traded=days,
+                     near_floor=near_floor, owner=owner)
 
 
 def lines_for(plan, mid, action=None):
@@ -93,6 +94,40 @@ def test_tradeify_eval_finisher_downsizes_last_day():
     assert plan.desired[f.mirror_id].multiplier == 0.8
 
 
+def test_tradeify_eval_intake_two_per_day_depth_first():
+    for _ in range(4):
+        MS.create_mirror("tradeify-50k")
+    ms = MS.load_mirrors()
+    ids = sorted(ms)
+    ms[ids[3]].days_traded = 2                        # most advanced -> priority
+    ms[ids[1]].leader_id = 1                          # mapped, but loses its slot
+    plan = cp.build_plan([L(1), L(2)], ms, TODAY)
+    mapped = [k for k in ids if plan.desired[k].leader_id is not None]
+    assert set(mapped) == {ids[3], ids[0]}            # 2/day, depth-first
+    un = lines_for(plan, ids[1], "UNMAP")
+    assert un and "intake slot" in un[0].reason
+    assert plan.desired[ids[2]].leader_id is None
+
+
+def test_tradeify_intake_rides_the_driven_leader():
+    # A non-lockstep rider must sit on the leader the depth-first scheduler is
+    # actually driving (most advanced), not on an idle fresh one.
+    m = MS.create_mirror("tradeify-50k")
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1, days=0), L(2, days=7)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id == 2
+
+
+def test_lucid_evals_have_no_intake_gate():
+    # Lockstep twins inherit the leaders' own 2-slots/day pacing - all of them
+    # stay mapped.
+    for _ in range(4):
+        MS.create_mirror("lucid-50k")
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1), L(2), L(3), L(4)], ms, TODAY)
+    assert all(d.leader_id is not None for d in plan.desired.values())
+
+
 def test_lucid_eval_never_downsizes():
     m = MS.create_mirror("lucid-50k", leader_id=1)
     ms = MS.load_mirrors()
@@ -102,6 +137,44 @@ def test_lucid_eval_never_downsizes():
     mm.eval_best_day = 1_530.0
     plan = cp.build_plan([L(1)], ms, TODAY)
     assert plan.desired[m.mirror_id].multiplier == 1.0   # pure clone, lockstep
+
+
+# ------------------------------------------ near-floor (stopless) leader guard
+def test_tradeify_eval_avoids_near_floor_leader():
+    # Tradeify (0.8x, non-lockstep, no DLL) must not copy a stopless entry from a
+    # leader that is within one stop of its floor - remap to a safe leader.
+    m = MS.create_mirror("tradeify-50k", leader_id=1)
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1, near_floor=True), L(2)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id == 2
+    mv = lines_for(plan, m.mirror_id, "MOVE")
+    assert mv and "near its floor" in mv[0].reason
+
+
+def test_tradeify_eval_holds_flat_when_all_leaders_near_floor():
+    m = MS.create_mirror("tradeify-50k", leader_id=1)
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1, near_floor=True), L(2, near_floor=True)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id is None      # better flat than stopless
+    un = lines_for(plan, m.mirror_id, "UNMAP")
+    assert un and "near their floor" in un[0].reason
+
+
+def test_fresh_tradeify_eval_blocked_from_only_near_floor_leader():
+    m = MS.create_mirror("tradeify-50k")                    # never mapped
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1, near_floor=True)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id is None
+
+
+def test_lucid_eval_still_follows_near_floor_leader():
+    # Lucid copies 1:1 and dies in lockstep, so a near-floor leader is safe; the
+    # guard must NOT strand it.
+    m = MS.create_mirror("lucid-50k", leader_id=1)
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1, near_floor=True)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id == 1
+    assert not lines_for(plan, m.mirror_id, "MOVE")
 
 
 def test_payout_ready_parks_and_queues():
@@ -184,14 +257,42 @@ def test_buy_list_tops_up_all_pipelines():
     ms = MS.load_mirrors()
     plan = cp.build_plan(leaders, ms, TODAY)
     by = {b["firm"]: b for b in plan.buys}
-    assert by["Topstep"]["count"] == 7                # 10 - 3
-    assert by["Lucid"]["count"] == 6                  # min(7, 10-0) - 1
-    assert by["Tradeify"]["count"] == 10
-    assert by["Apex"]["count"] == 10                  # cohort gate open (2 PAs)
-    assert "payout-funded" in by["Apex"]["reason"]
+    assert by["Topstep"]["count"] == 3                # 6 - 3 (per login)
+    assert by["Lucid"]["count"] == 9                  # 10 - 1
+    assert by["Tradeify"]["count"] == 6
+    assert by["Apex"]["count"] == 8                   # top-up 8 - 0 (2 PAs < 16)
+    assert "pipeline 0/8" in by["Apex"]["reason"]
 
 
-def test_lucid_cap_shrinks_with_funded_population():
+def test_topstep_pipeline_topped_up_per_login():
+    # login A holds 2 evals, login B only a funded account -> each login gets
+    # its own top-up row (6 - 2 = 4 and 6 - 0 = 6)
+    leaders = [L(1, owner="A"), L(2, owner="A"),
+               L(3, program="funded", phase="funded", owner="B")]
+    plan = cp.build_plan(leaders, MS.load_mirrors(), TODAY)
+    ts = {b["owner"]: b for b in plan.buys if b["firm"] == "Topstep"}
+    assert ts["A"]["count"] == 4 and "login A" in ts["A"]["reason"]
+    assert ts["B"]["count"] == 6 and "login B" in ts["B"]["reason"]
+
+
+def test_lucid_buys_throttle_at_three_waiting_passes():
+    MS.create_mirror("lucid-50k")                     # 1 eval
+    extra = [MS.create_mirror("lucid-50k") for _ in range(3)]
+    ms = MS.load_mirrors()
+    ms[extra[0].mirror_id].phase = "passed"
+    # 1 waiting pass no longer pauses buys (throttle loosened 1 -> 3,
+    # 2026-07-11 sweep): standing = 3 evals + 1 passed -> top up 10 - 4 = 6
+    plan = cp.build_plan([], ms, TODAY)
+    lucid = [b for b in plan.buys if b["firm"] == "Lucid"]
+    assert lucid and lucid[0]["count"] == 6
+    # ... but 3 waiting passes DO pause buys
+    for m in extra:
+        ms[m.mirror_id].phase = "passed"
+    plan = cp.build_plan([], ms, TODAY)
+    assert not any(b["firm"] == "Lucid" for b in plan.buys)
+
+
+def test_lucid_funded_do_not_consume_eval_slots():
     ms = {}
     for _ in range(4):
         m = MS.create_mirror("lucid-50k")
@@ -201,16 +302,27 @@ def test_lucid_cap_shrinks_with_funded_population():
         ms[k].phase = "funded"                        # 3 funded + 1 eval
     plan = cp.build_plan([], ms, TODAY)
     lucid = [b for b in plan.buys if b["firm"] == "Lucid"]
-    # target = min(7, 10-3) = 7 -> need 6 more evals
-    assert lucid and lucid[0]["count"] == 6
+    # funded accounts freed their slots (eval deleted on funding), so the
+    # standing target stays 10 -> need 9 more evals
+    assert lucid and lucid[0]["count"] == 9
 
 
-def test_apex_cohort_blocked_while_evals_in_flight_or_near_cap():
-    MS.create_mirror("apex-50k")                      # eval in flight
+def test_apex_topup_fills_to_target_and_respects_pa_headroom():
+    # top-up semantics (2026-07-11 sweep): evals in flight no longer block
+    # buys, the pipeline refills to 8
+    for _ in range(3):
+        MS.create_mirror("apex-50k")                  # 3 evals in flight
+    plan = cp.build_plan([], MS.load_mirrors(), TODAY)
+    apex = [b for b in plan.buys if b["firm"] == "Apex"]
+    assert apex and apex[0]["count"] == 5             # 8 - 3
+
+    for _ in range(8 - 3):
+        MS.create_mirror("apex-50k")                  # pipeline full at 8
     plan = cp.build_plan([], MS.load_mirrors(), TODAY)
     assert not any(b["firm"] == "Apex" for b in plan.buys)
 
-    MS.delete_mirror("apex-01")
+    for m in list(MS.load_mirrors()):
+        MS.delete_mirror(m)
     for _ in range(16):
         MS.create_mirror("apex-50k", phase="funded")  # 16 PAs >= 16-cap threshold
     plan = cp.build_plan([], MS.load_mirrors(), TODAY)
