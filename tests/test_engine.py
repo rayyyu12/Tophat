@@ -67,6 +67,16 @@ def test_funded_floor_locks_at_breakeven():
     assert eod_floor(CFG, st) == 0.0                          # can't go below breakeven
 
 
+def test_eval_floor_locks_at_start():
+    # The MLL only trails for the first $2,000 of profit, then locks at the
+    # STARTING balance: an eval at 52,900 has a 50,000 floor, not 50,900.
+    ev = AccountState(phase=Phase.EVAL, base_balance=50_000,
+                      equity=52_900, peak_equity_eod=52_900)
+    assert eod_floor(CFG, ev) == 50_000.0
+    ev.peak_equity_eod = 51_000                              # still inside the trail
+    assert eod_floor(CFG, ev) == 49_000.0
+
+
 def test_is_dead_at_floor():
     assert is_dead(CFG, funded(equity=-2_000, peak_equity_eod=0))
     assert not is_dead(CFG, funded(equity=-1_000, peak_equity_eod=0))
