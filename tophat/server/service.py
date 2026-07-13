@@ -266,6 +266,28 @@ def _below_mll(cfg, st, balance: float) -> bool:
     return balance <= eod_floor(cfg, st)
 
 
+def _auto_mark_blown(cfg, st, balance: float, account_id: int) -> bool:
+    """MLL is the source of truth for blown (operator rule, 2026-07-12): a live
+    balance at/below the trailing floor IS a dead account, whatever canTrade
+    says — flip the phase here so counts, analytics and the replenishment
+    pipeline all see it without an operator step. Returns True if flipped
+    (caller persists). Two deliberate exceptions:
+      - a pending TopHat trade defers to reconcile(), which books the blown
+        trade's loss to the trade log and mirrors BEFORE flipping the phase
+        itself (the 2026-07-09 orphaned-reconcile fix);
+      - a DLL-only red day never trips this — the day loss sits above the
+        trailing floor, and any intraday canTrade=false clears by next session.
+    False positives can only come from wrong peak/base data; fixing the data
+    (or the manual phase override in Accounts) un-blows the account."""
+    if st.pending_label or not _below_mll(cfg, st, balance):
+        return False
+    floor = eod_floor(cfg, st)   # before the flip (eod_floor reads phase-agnostic fields)
+    st.phase = Phase.BLOWN
+    _trade.warning("AUTO-BLOWN acct=%s — balance $%.2f at/below MLL floor $%.2f "
+                   "(broker canTrade disregarded)", account_id, balance, floor)
+    return True
+
+
 def _init_state(st, cfg, account) -> None:
     """First time we see an account: infer phase from name and set its baseline."""
     st.phase = infer_phase_from_name(account.name)
@@ -397,6 +419,8 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
             _init_state(st, cfg, a)
             changed_ids.append(a.account_id)
         elif sync_phase_from_name(st, a.name, cfg):
+            changed_ids.append(a.account_id)
+        if not is_practice(a.name) and _auto_mark_blown(cfg, st, a.balance, a.account_id):
             changed_ids.append(a.account_id)
         entry = registry.entry(a.account_id)
         tradeable = (_effective_can_trade(a.can_trade, entry)
@@ -1041,11 +1065,14 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             results.append(row)
             continue
         # Safety net: a balance at/below the MLL floor means the firm already
-        # considers this account dead, whatever the API's canTrade says. Never fire.
+        # considers this account dead, whatever the API's canTrade says. Never
+        # fire — and make it official: MLL is the source of truth for blown.
         bal = balance.get(aid)
         if bal is not None and _below_mll(cfg, st, bal):
+            if _auto_mark_blown(cfg, st, bal, aid):
+                merge_save(states, [aid])
             results.append({"account_id": aid, "action": "idle",
-                            "note": "balance at/below MLL floor - marked inactive"})
+                            "note": "balance at/below MLL floor - blown"})
             continue
         if aid in practice_ids:
             # Manual validation fire: runs the engine's plan on the practice

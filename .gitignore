@@ -80,3 +80,6 @@ logs/
 .cursor/
 .agents/
 skills-lock.json
+
+# Render migration bundle (contains .secret + login DB + encrypted keys) - NEVER commit
+/tophat-state.tgz

@@ -307,6 +307,59 @@ def test_lucid_funded_do_not_consume_eval_slots():
     assert lucid and lucid[0]["count"] == 9
 
 
+def test_pipeline_counts_phase_not_cantrade():
+    # 2 live evals + 1 auto-blown (below-MLL accounts get phase='blown' from the
+    # snapshot, whatever canTrade said) + 1 practice ticket + 1 DLL-locked eval
+    # (red day, canTrade=false for the day, still ABOVE the floor -> alive and
+    # keeps its slot). Pipeline = 3 (live 2 + DLL-locked), so top-up = 3.
+    leaders = [L(1), L(2), L(3, phase="blown", can_trade=True),
+               L(4, name="PRAC-X1"), L(5, can_trade=False)]
+    leaders[3].practice = True
+    plan = cp.build_plan(leaders, MS.load_mirrors(), TODAY)
+    ts = [b for b in plan.buys if b["firm"] == "Topstep"]
+    assert ts and ts[0]["count"] == 3                 # 6 - 3 holding slots
+
+
+def test_untradeable_and_practice_accounts_never_lead_mirrors():
+    # can_trade=false (force-inactive / DLL-locked today) and practice tickets
+    # must not receive NEW mirror mappings — only genuinely live leaders do.
+    locked = L(1, can_trade=False)
+    prac = L(2, name="PRAC-X1")
+    prac.practice = True
+    alive = L(3)
+    m = MS.create_mirror("lucid-50k", leader_id=1)    # mapped to the locked leader
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([locked, prac, alive], ms, TODAY)
+    # remapped to the only genuinely live eval leader, never the practice ticket
+    assert plan.desired[m.mirror_id].leader_id == 3
+    assert not locked.live_eval and not prac.live_eval and alive.live_eval
+    # ...but the locked one still occupies a pipeline slot (alive, just red today)
+    assert locked.pipeline_eval and not prac.pipeline_eval
+
+
+def test_leaders_from_pool_sees_mll_dead_as_blown():
+    """End-to-end: broker says canTrade=true but the balance is under the MLL
+    floor -> the snapshot auto-marks the account blown, so the solver's Leader
+    arrives phase='blown' (the 'dirty dead account' case that used to inflate
+    the pipeline count and pose as a live mirror leader)."""
+    from types import SimpleNamespace
+
+    from tophat.broker.base import BrokerAccount
+    from tophat.broker.mock import MockBroker
+
+    b = MockBroker(n_eval=2, n_funded=0, seed=77)
+    a0 = b.list_accounts()[0]
+    # fresh eval floor = 50,000 - 2,000 = 48,000; 47,500 is dead
+    b._accounts[0] = BrokerAccount(a0.account_id, a0.name, 47_500.0, True, True)
+    pool = [SimpleNamespace(broker=b, mode="mock", owner="deadpool")]
+    leaders = {l.account_id: l for l in cp.leaders_from_pool(pool)}
+    dead = leaders[a0.account_id]
+    assert dead.phase == "blown"
+    assert not dead.live_eval and not dead.pipeline_eval
+    alive = [l for l in leaders.values() if l.live_eval]
+    assert len(alive) == 1
+
+
 def test_apex_topup_fills_to_target_and_respects_pa_headroom():
     # top-up semantics (2026-07-11 sweep): evals in flight no longer block
     # buys, the pipeline refills to 8

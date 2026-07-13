@@ -84,8 +84,13 @@ class Leader:
     program: str            # "eval" | "funded"
     phase: str              # eval | funded | passed | blown | retired
     enabled: bool
-    can_trade: bool
+    can_trade: bool         # OPERATIONAL tradability (snapshot's can_trade): folds in
+                            # the below-MLL check + force_inactive, NOT the raw broker
+                            # canTrade — Topstep keeps canTrade=true on some dead
+                            # below-floor accounts and those must never look live here
     signal_plan: str = ""   # non-empty = signal channel account
+    practice: bool = False  # PRAC-* ticket: may carry a signal channel but must never
+                            # be an eval/funded leader or count toward the pipeline
     days_traded: int = 0
     near_floor: bool = False  # within one eval-stop of the trailing floor -> its next
                               # entry fires WITHOUT a protective stop (auto-liquidation)
@@ -96,12 +101,24 @@ class Leader:
     @property
     def live_eval(self) -> bool:
         return (self.program == "eval" and self.phase == "eval"
-                and self.enabled and self.can_trade and not self.signal_plan)
+                and self.enabled and self.can_trade
+                and not self.signal_plan and not self.practice)
+
+    @property
+    def pipeline_eval(self) -> bool:
+        """Occupies a Topstep eval pipeline slot. PHASE is the source of truth
+        here, not can_trade: below-MLL accounts are auto-marked blown by the
+        snapshot (so they drop out via phase), while a DLL-locked account —
+        red day, still above the trailing floor — may report canTrade=false
+        for the rest of the day yet is alive and keeps its slot. Gating this
+        on can_trade would recommend replacement buys on every red day."""
+        return (self.program == "eval" and self.phase == "eval"
+                and self.enabled and not self.signal_plan and not self.practice)
 
     @property
     def live_funded(self) -> bool:
         return (self.phase == "funded" and self.enabled and self.can_trade
-                and not self.signal_plan)
+                and not self.signal_plan and not self.practice)
 
     @property
     def fresh_funded(self) -> bool:
@@ -434,10 +451,10 @@ def _buy_list(leaders: list[Leader], mirrors: dict[str, MirrorAccount]) -> list[
     # only once its first account exists in the pool snapshot.
     owners = sorted({l.owner for l in leaders if not l.signal_plan}) or [""]
     for owner in owners:
-        ts_evals = sum(1 for l in leaders
-                       if l.owner == owner
-                       and l.program == "eval" and l.phase == "eval" and l.enabled
-                       and not l.signal_plan)
+        # pipeline_eval: dead accounts drop out via the auto-blown phase flip
+        # (MLL is the source of truth), practice/signal tickets never counted,
+        # and DLL-locked-but-alive accounts still hold their slot.
+        ts_evals = sum(1 for l in leaders if l.owner == owner and l.pipeline_eval)
         need = TOPSTEP.eval_pipeline_target - ts_evals
         if need > 0:
             login = f"login {owner}: " if owner and len(owners) > 1 else ""
@@ -572,8 +589,12 @@ def leaders_from_pool(pool) -> list[Leader]:
             out.append(Leader(
                 account_id=r["account_id"], name=r["name"], program=r["program"],
                 phase=r["phase"], enabled=r["enabled"],
-                can_trade=bool(r["broker_can_trade"]) and not r["force_inactive"],
+                # The snapshot's operational verdict, not raw broker canTrade: it
+                # already folds in force_inactive AND the below-MLL check, so a
+                # dead-but-canTrade Topstep account can't pose as a live leader.
+                can_trade=bool(r["can_trade"]),
                 signal_plan=r.get("signal_plan", ""),
+                practice=bool(r.get("practice")),
                 days_traded=st.days_traded if st else 0,
                 near_floor=near_floor,
                 owner=str(h.owner or ""),

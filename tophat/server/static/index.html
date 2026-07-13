@@ -748,23 +748,28 @@
           <div class="head"><h2>Lifecycle</h2><span class="muted" id="acctLifecyclePreview"></span></div>
           <div class="body">
             <div class="field">
-              <label>Preset</label>
-              <select class="acct-pick" id="acctPreset">
-                <option value="">custom</option>
-                <option value="eval_day_1">Eval - day 1</option>
-                <option value="eval_day_2">Eval - day 2</option>
-                <option value="eval_day_3">Eval - day 3</option>
-                <option value="funded_nuke_1">Funded - nuke try 1</option>
-                <option value="funded_nuke_2">Funded - nuke try 2 (recovery)</option>
-                <option value="flip_1">Funded - flips after nuke (1/5)</option>
-                <option value="flip_3">Funded - flip 3/5</option>
-                <option value="flip_cycle">Funded - flip-only cycle (payout 2)</option>
-                <option value="payout_ready">Payout ready</option>
-                <option value="passed">Eval passed</option>
-                <option value="blown">Blown</option>
-                <option value="retired">Retired</option>
+              <label>Preset — phase</label>
+              <select class="acct-pick" id="acctPresetPhase">
+                <option value="">custom (edit fields below)</option>
+                <option value="eval">Eval</option>
+                <option value="funded">Funded</option>
+                <option value="special">Terminal / special</option>
               </select>
             </div>
+            <div class="field hidden" id="presetCycleWrap">
+              <label>Preset — payout cycle</label>
+              <select class="acct-pick" id="acctPresetCycle">
+                <option value="0">Payout 1 — nuke cycle</option>
+                <option value="1">Payout 2 — flip-only</option>
+                <option value="2">Payout 3 — re-nuke cycle</option>
+                <option value="3">Payout 4 — flip-only</option>
+              </select>
+            </div>
+            <div class="field hidden" id="presetStateWrap">
+              <label>Preset — state</label>
+              <select class="acct-pick" id="acctPresetState"></select>
+            </div>
+            <div class="check-row hidden" id="presetHint"><span class="muted"></span></div>
             <div class="field"><label>Phase</label>
               <select class="acct-pick" id="f_phase">
                 <option value="eval">eval</option><option value="funded">funded</option>
@@ -1598,30 +1603,53 @@ $('#btnAddBox').onclick=async()=>{
 };
 
 // ---- accounts editor ----
-const PRESETS = {
-  eval_day_1: {phase:'eval', days_traded:0, payouts_taken:0, winning_days_this_cycle:0,
-    nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false},
-  eval_day_2: {phase:'eval', days_traded:1, payouts_taken:0, winning_days_this_cycle:0,
-    nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false},
-  eval_day_3: {phase:'eval', days_traded:2, payouts_taken:0, winning_days_this_cycle:0,
-    nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false},
-  funded_nuke_1: {phase:'funded', days_traded:0, payouts_taken:0, winning_days_this_cycle:0,
-    nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false, base_balance:0},
-  funded_nuke_2: {phase:'funded', days_traded:0, payouts_taken:0, winning_days_this_cycle:0,
-    nuke_tries_this_cycle:1, nuke_hit_this_cycle:false, payout_ready:false, base_balance:0},
-  // A landed nuke IS the cycle's first winning day, so post-nuke starts at 1/5.
-  flip_1: {phase:'funded', days_traded:1, payouts_taken:0, winning_days_this_cycle:1,
-    nuke_tries_this_cycle:1, nuke_hit_this_cycle:true, payout_ready:false, base_balance:0},
-  flip_3: {phase:'funded', days_traded:3, payouts_taken:0, winning_days_this_cycle:3,
-    nuke_tries_this_cycle:1, nuke_hit_this_cycle:true, payout_ready:false, base_balance:0},
-  // Payouts 2 and 4 are flip-only cycles (no nuke) - odd payouts_taken.
-  flip_cycle: {phase:'funded', days_traded:0, payouts_taken:1, winning_days_this_cycle:0,
-    nuke_tries_this_cycle:0, nuke_hit_this_cycle:false, payout_ready:false, base_balance:0},
-  payout_ready: {payout_ready:true},
-  passed: {phase:'passed', payout_ready:false},
-  blown: {phase:'blown', payout_ready:false},
-  retired: {phase:'retired', payout_ready:false},
-};
+// Cascading lifecycle presets: phase -> (payout cycle) -> exact state.
+// A preset describes an account's EXISTING history (adoption / onboarding a
+// manually-traded account) — it fills the raw fields below; balances are NOT
+// part of a preset (tick "Sync equity & peak from broker balance" to adopt the
+// live numbers), and record_payouts is unticked so applying one never books
+// payout events into Analytics.
+//
+// Field cheat sheet (mirrors engine.decide / lifecycle_label):
+//   eval:  the engine fires the same 5-mini bracket every day — "after DLL" vs
+//          "after target" differ only in the (synced) balance; days_traded is
+//          what the preset actually sets (min 2 days to pass).
+//   funded: payouts_taken picks the cycle (even = nuke cycle, odd = flip-only),
+//          winning_days advance the 5-day payout bar (a landed nuke banks day 1,
+//          so nuke-cycle flips run 1/4..4/4), payout_ready parks the account.
+//          days_traded only distinguishes "fresh PA" (0) from "has traded" —
+//          funded presets use cycle*6 + step as a representative value.
+const EVAL_STATES = [
+  ['day 1 — fresh, nothing traded',                    {days:0}],
+  ['day 2 — day 1 hit the DLL (recovering)',           {days:1}],
+  ['day 2 — day 1 banked the target (finisher day)',   {days:1}],
+  ['day 3 — after two red days',                       {days:2}],
+  ['day 3 — finisher after a red + green day',         {days:2}],
+  ['day 4+ — then edit "Eval days traded" below',      {days:3}],
+];
+function fundedStates(cycle){                 // cycle = payouts already taken, 0..3
+  const nm = cycle >= 2 ? 're-nuke' : 'nuke';
+  const s = [];
+  if(cycle % 2 === 0){                        // nuke cycle (payouts 1 and 3)
+    s.push([`${nm} try 1 — fresh cycle`,          {d:0, tries:0, hit:false, w:0}]);
+    s.push([`${nm} try 2 — recovery bracket`,     {d:1, tries:1, hit:false, w:0}]);
+    s.push([`${nm} try 3 — recovery bracket`,     {d:2, tries:2, hit:false, w:0}]);
+    for(let k=1; k<=4; k++)
+      s.push([`flip ${k}/4 — ${nm} landed`,       {d:k, tries:1, hit:true, w:k}]);
+    s.push(['payout ready — 5 winning days banked',{d:5, tries:1, hit:true, w:5, ready:true}]);
+  } else {                                    // flip-only cycle (payouts 2 and 4)
+    for(let k=1; k<=5; k++)
+      s.push([`flip ${k}/5`,                      {d:k-1, tries:0, hit:false, w:k-1}]);
+    s.push(['payout ready — 5 winning days banked',{d:5, tries:0, hit:false, w:5, ready:true}]);
+  }
+  return s;
+}
+const SPECIAL_STATES = [
+  ['eval passed — funded account incoming', {phase:'passed'}],
+  ['blown — hit the trailing floor',        {phase:'blown'}],
+  ['retired — payouts harvested',           {phase:'retired'}],
+  ['payout ready (keep counters as-is)',    {ready_only:true}],
+];
 let ACCT_LIST = [];
 let ACCT_CUR = null;
 
@@ -1647,7 +1675,8 @@ function fillAcctForm(acct){
   $('#f_base').value = s.base_balance;
   $('#f_sync_balance').checked = false;
   $('#f_record_payouts').checked = true;
-  $('#acctPreset').value = '';
+  $('#acctPresetPhase').value = '';
+  renderPresetStates();
   $('#acctLifecyclePreview').textContent = acct.lifecycle;
   $('#acctBrokerStatus').innerHTML = `<span class="pill ${acct.can_trade?'active':'inactive'}">${acct.trading_status}</span> · broker API ${acct.broker_can_trade?'canTrade':'no trade'} · ${fmtUsd(acct.balance)}`;
   $('#acctEditor').classList.remove('hidden');
@@ -1679,21 +1708,66 @@ function onAcctPick(){
 }
 
 $('#acctPick').onchange = onAcctPick;
-$('#acctPreset').onchange = ()=>{
-  const p = PRESETS[$('#acctPreset').value];
-  if(!p || !ACCT_CUR) return;
-  // Presets describe an account's EXISTING history (adoption) — applying one
-  // must never book payout events into Analytics.
+
+function renderPresetStates(){
+  const phase = $('#acctPresetPhase').value;
+  $('#presetCycleWrap').classList.toggle('hidden', phase !== 'funded');
+  $('#presetStateWrap').classList.toggle('hidden', !phase);
+  $('#presetHint').classList.toggle('hidden', !phase);
+  const st = $('#acctPresetState');
+  st.innerHTML = '<option value="">choose the exact state…</option>';
+  let list = [];
+  if(phase === 'eval') list = EVAL_STATES;
+  else if(phase === 'funded') list = fundedStates(parseInt($('#acctPresetCycle').value, 10));
+  else if(phase === 'special') list = SPECIAL_STATES;
+  list.forEach((s, i)=>{
+    const o = document.createElement('option');
+    o.value = String(i); o.textContent = s[0];
+    st.appendChild(o);
+  });
+  $('#presetHint').querySelector('span').textContent = phase
+    ? 'Applying a preset fills the fields below — review them, tick "Sync equity & '
+      + 'peak from broker balance" to adopt the live numbers, then Save.'
+    : '';
+}
+
+function applyPreset(){
+  if(!ACCT_CUR) return;
+  const phase = $('#acctPresetPhase').value;
+  const idx = $('#acctPresetState').value;
+  if(!phase || idx === '') return;
+  // Adoption semantics: never book payout events into Analytics from a preset.
   $('#f_record_payouts').checked = false;
-  if(p.phase) $('#f_phase').value = p.phase;
-  if(p.days_traded != null) $('#f_days_traded').value = p.days_traded;
-  if(p.payouts_taken != null) $('#f_payouts_taken').value = p.payouts_taken;
-  if(p.winning_days_this_cycle != null) $('#f_winning_days').value = p.winning_days_this_cycle;
-  if(p.nuke_tries_this_cycle != null) $('#f_nuke_tries').value = p.nuke_tries_this_cycle;
-  if(p.nuke_hit_this_cycle != null) $('#f_nuke_hit').checked = p.nuke_hit_this_cycle;
-  if(p.payout_ready != null) $('#f_payout_ready').checked = p.payout_ready;
-  if(p.base_balance != null) $('#f_base').value = p.base_balance;
-};
+  if(phase === 'eval'){
+    const p = EVAL_STATES[idx][1];
+    $('#f_phase').value = 'eval';
+    $('#f_days_traded').value = p.days;
+    $('#f_payouts_taken').value = 0;
+    $('#f_winning_days').value = 0;
+    $('#f_nuke_tries').value = 0;
+    $('#f_nuke_hit').checked = false;
+    $('#f_payout_ready').checked = false;
+  } else if(phase === 'funded'){
+    const cycle = parseInt($('#acctPresetCycle').value, 10);
+    const p = fundedStates(cycle)[idx][1];
+    $('#f_phase').value = 'funded';
+    $('#f_payouts_taken').value = cycle;
+    $('#f_days_traded').value = cycle * 6 + p.d;   // representative; 0 = fresh PA
+    $('#f_winning_days').value = p.w;
+    $('#f_nuke_tries').value = p.tries;
+    $('#f_nuke_hit').checked = p.hit;
+    $('#f_payout_ready').checked = !!p.ready;
+    $('#f_base').value = 0;
+  } else {                                          // terminal / special
+    const p = SPECIAL_STATES[idx][1];
+    if(p.ready_only){ $('#f_payout_ready').checked = true; }
+    else { $('#f_phase').value = p.phase; $('#f_payout_ready').checked = false; }
+  }
+}
+
+$('#acctPresetPhase').onchange = renderPresetStates;
+$('#acctPresetCycle').onchange = renderPresetStates;
+$('#acctPresetState').onchange = applyPreset;
 
 $('#btnSaveAcct').onclick = async()=>{
   if(!ACCT_CUR) return;
