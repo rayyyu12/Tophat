@@ -1244,6 +1244,56 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             "orders_placed": placed, "reconciled": reconciled, "results": results}
 
 
+def ops_recap() -> dict:
+    """Morning-digest payload for deploy/watchdog.py (API mode): armed state,
+    today's locked drive, reconciled outcomes, still-open trades and
+    payout-ready accounts — assembled from THIS tenant's stores. Exists because
+    prod state moved to Render's persistent disk (2026-07-12): the watchdog box
+    keeps only stale local copies, so it must ask the server, not read files."""
+    from tophat.store.paths import ACCOUNT_NAMES_FILE
+    settings = load_settings()
+    today = trading_day(datetime.now(ET))
+    names: dict[int, str] = {}
+    try:
+        raw = json.loads(tenant.resolve(ACCOUNT_NAMES_FILE).read_text(encoding="utf-8"))
+        names.update({int(k): v for k, v in raw.items() if v})
+    except Exception:
+        pass
+    registry = load_registry()
+    for aid, e in registry.accounts.items():
+        if e.alias:
+            names[aid] = e.alias
+
+    def label(aid: int) -> str:
+        return names.get(aid) or f"#{aid}"
+
+    results = []
+    for e in trade_log.read_events():
+        if e.get("type") != "trade" or e.get("account_id") is None:
+            continue                     # mirror rows carry mirror_id, not account_id
+        if (e.get("trade_date") or e.get("date")) != today:
+            continue
+        results.append({"account": label(int(e["account_id"])),
+                        "label": e.get("label", "?"),
+                        "outcome": e.get("outcome") or "flat",
+                        "pnl": float(e.get("pnl") or 0.0)})
+    still_open: list[str] = []
+    ready: list[str] = []
+    for aid, st in load_all().items():
+        if st.phase in (Phase.PASSED, Phase.BLOWN, Phase.RETIRED):
+            continue
+        if st.pending_label and st.pending_date == today:
+            still_open.append(f"{label(aid)} ({st.pending_label})")
+        if st.payout_ready:
+            ready.append(label(aid))
+    for mid, m in load_mirrors().items():
+        if m.payout_ready:
+            ready.append(m.alias or mid)
+    return {"ok": True, "armed": bool(settings.auto_execute),
+            "trading_day": today, **drive_public(),
+            "results": results, "still_open": still_open, "payout_ready": ready}
+
+
 def mark_payout(account_id: int) -> dict:
     """Operator confirms a withdrawal; advance the account to its next payout cycle."""
     settings = load_settings()

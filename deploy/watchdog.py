@@ -11,14 +11,23 @@ posts, and exits. No polling, no resident process, no server load.
              reconciled outcomes (target/stop per account), accounts now
              payout-ready, connection drops today (only if any).
 
-Config: deploy/watchdog_config.json
+Config: deploy/watchdog_config.json (gitignored — holds a password; start from
+watchdog_config.json.example)
     {"webhook_url": "https://discord.com/api/webhooks/...",
-     "tophat_url": "http://127.0.0.1:8800",
+     "tophat_url": "https://<your-service>.onrender.com",
+     "tophat_email": "you@x.com",
+     "tophat_password": "...",
      "settings_json": "<abs path to data/users/<uid>/settings.json>",
      "tradecopia_db": "<abs path to tradecopia-desktop.db>",
      "send_green": false}
-The recap reads trade_log.jsonl / account_states.json / mirrors.json from the
-settings_json directory — works even when the TopHat server is down.
+
+Two data modes:
+  API mode (tophat_email + tophat_password set) — REQUIRED since prod moved to
+  Render (2026-07-12): armed state, drive, and the recap all come from the
+  server (/api/ops/recap) because this box's data/ files are stale copies.
+  Legacy mode (no credentials) — reads trade_log.jsonl / account_states.json /
+  mirrors.json from the settings_json directory; only correct when the TopHat
+  server runs on THIS machine.
 
 Schedule (LOCAL clock; 08:00+08:25 CT = 09:00/09:25 ET — the second run exists
 because the 2026-07-07 Topstep kick landed at 08:14 CT, after an 08:00 check):
@@ -45,6 +54,8 @@ GREEN, AMBER, RED = 0x2ECC71, 0xE67E22, 0xED4245
 DEFAULTS = {
     "webhook_url": "",
     "tophat_url": "http://127.0.0.1:8800",
+    "tophat_email": "",
+    "tophat_password": "",
     "settings_json": r"C:\Users\Rayyan Khan\Desktop\Project TopHat\data\users\1\settings.json",
     "tradecopia_db": r"C:\Users\Rayyan Khan\AppData\Roaming\Tradecopia\tradecopia-desktop.db",
     "send_green": False,
@@ -124,18 +135,50 @@ def read_tradecopia(db_path: str) -> dict:
 
 # ---------------------------------------------------------------- tophat
 
-def check_tophat(url: str, settings_json: str) -> tuple[list[str], list[str]]:
+def api_recap(cfg: dict) -> dict | None:
+    """Login + GET /api/ops/recap. None when no credentials are configured;
+    raises on login/fetch failure (callers surface the error)."""
+    if not (cfg.get("tophat_email") and cfg.get("tophat_password")):
+        return None
+    import http.cookiejar
+    opener = urllib.request.build_opener(
+        urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    body = json.dumps({"email": cfg["tophat_email"],
+                       "password": cfg["tophat_password"]}).encode()
+    opener.open(urllib.request.Request(
+        f"{cfg['tophat_url']}/api/login", data=body,
+        headers={"Content-Type": "application/json"}), timeout=10)
+    with opener.open(f"{cfg['tophat_url']}/api/ops/recap", timeout=10) as r:
+        return json.loads(r.read().decode())
+
+
+def check_tophat(cfg: dict) -> tuple[list[str], list[str]]:
+    url = cfg["tophat_url"]
     ok: list[str] = []
     bad: list[str] = []
     try:
-        urllib.request.urlopen(url, timeout=5)
+        urllib.request.urlopen(url, timeout=10)
         ok.append("server up")
     except urllib.error.HTTPError:
         ok.append("server up")   # any HTTP response proves it's listening
     except Exception:
         bad.append(f"server unreachable at {url}")
+        return ok, bad
+    # Armed check: from the server in API mode (this box's settings.json is a
+    # stale copy since the Render move); from the local file in legacy mode.
     try:
-        settings = json.loads(Path(settings_json).read_text(encoding="utf-8"))
+        recap = api_recap(cfg)
+    except Exception as exc:
+        bad.append(f"TopHat login failed ({exc}) — check tophat_email/password")
+        return ok, bad
+    if recap is not None:
+        if recap.get("armed"):
+            ok.append("armed (auto-execute ON)")
+        else:
+            bad.append("auto_execute is OFF — nothing fires today")
+        return ok, bad
+    try:
+        settings = json.loads(Path(cfg["settings_json"]).read_text(encoding="utf-8"))
         if settings.get("auto_execute", False):
             ok.append("armed (auto-execute ON)")
         else:
@@ -262,7 +305,7 @@ def send_embed(webhook_url: str, title: str, color: int, fields: list[dict],
 def run_premarket(cfg: dict) -> tuple[str, int, list[dict], str] | None:
     """None = all clear and send_green is off (post nothing)."""
     tc = read_tradecopia(cfg["tradecopia_db"])
-    th_ok, th_bad = check_tophat(cfg["tophat_url"], cfg["settings_json"])
+    th_ok, th_bad = check_tophat(cfg)
 
     copier_bad: list[str] = []
     if not tc["app_running"]:
@@ -299,11 +342,31 @@ def run_premarket(cfg: dict) -> tuple[str, int, list[dict], str] | None:
 
 def run_recap(cfg: dict) -> tuple[str, int, list[dict], str]:
     tc = read_tradecopia(cfg["tradecopia_db"])
-    data_dir = user_data(cfg["settings_json"])
-    drive = tophat_drive(cfg["tophat_url"])
-    names = account_labels(data_dir, tc["names"])
-    outcomes = todays_outcomes(data_dir, names)
-    still_open, ready = open_and_ready(data_dir, names)
+    recap, api_err = None, ""
+    try:
+        recap = api_recap(cfg)
+    except Exception as exc:
+        api_err = str(exc)
+
+    if recap is not None:
+        # API mode: the server (Render) assembles everything from LIVE state.
+        side, src = recap.get("drive") or "", recap.get("drive_source") or ""
+        drive = ((f"{side} ({src})" if src else side) if side
+                 else "not locked (flat open, or no read since 09:45 ET)")
+        outcomes: dict[str, list[str]] = {"win": [], "loss": [], "flat": []}
+        for t in recap.get("results", []):
+            outcomes.setdefault(t.get("outcome") or "flat", []).append(
+                f"{t.get('account')} · {t.get('label', '?')} "
+                f"({float(t.get('pnl') or 0.0):+,.0f})")
+        still_open = [str(x) for x in recap.get("still_open", [])]
+        ready = [str(x) for x in recap.get("payout_ready", [])]
+    else:
+        # Legacy mode (server on this box) — or API failure fallback below.
+        data_dir = user_data(cfg["settings_json"])
+        drive = tophat_drive(cfg["tophat_url"])
+        names = account_labels(data_dir, tc["names"])
+        outcomes = todays_outcomes(data_dir, names)
+        still_open, ready = open_and_ready(data_dir, names)
 
     fields = [{"name": "Drive",
                "value": ("📈 " if "LONG" in drive else
@@ -325,8 +388,13 @@ def run_recap(cfg: dict) -> tuple[str, int, list[dict], str]:
         fields.append({"name": "Connection drops today",
                        "value": "\n".join(f"⚠️ {d}" for d in tc["drops_today"]),
                        "inline": False})
+    if api_err:
+        fields.append({"name": "Watchdog",
+                       "value": f"⚠️ recap API failed ({api_err}) — data above "
+                                "is from STALE local files",
+                       "inline": False})
     still_down = any(not c["up"] for c in tc["conns"])
-    color = RED if still_down else (AMBER if tc["drops_today"] else GREEN)
+    color = RED if still_down else (AMBER if (tc["drops_today"] or api_err) else GREEN)
     return "Morning recap", color, fields, ""
 
 

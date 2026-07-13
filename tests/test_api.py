@@ -325,3 +325,17 @@ def test_mirror_override_without_flag_is_raw(client):
     assert r["payouts_taken"] == 2
     assert not [e for e in trade_log.read_events()
                 if e.get("type") == "payout" and e.get("mirror_id") == m["mirror_id"]]
+
+
+def test_ops_recap_shape(client):
+    """Watchdog API mode (deploy/watchdog.py): session-authed digest with armed
+    state, drive, and today's outcomes - served from live tenant stores."""
+    r = client.get("/api/ops/recap")
+    assert r.status_code == 200
+    d = r.json()
+    assert d["ok"] is True
+    assert isinstance(d["armed"], bool)
+    assert isinstance(d["results"], list)
+    assert isinstance(d["still_open"], list)
+    assert isinstance(d["payout_ready"], list)
+    assert "drive" in d and "trading_day" in d

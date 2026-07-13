@@ -165,6 +165,12 @@ def create_app() -> FastAPI:
         s["auto_execute"] = load_settings().auto_execute
         return s
 
+    @app.get("/api/ops/recap")
+    def ops_recap():
+        """Session-authed morning digest for deploy/watchdog.py (API mode) —
+        the watchdog box holds no live state files since the Render move."""
+        return service.ops_recap()
+
     @app.get("/api/accounts")
     def list_accounts():
         return service.list_accounts_detail(current_pool())
