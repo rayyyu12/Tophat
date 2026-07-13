@@ -198,15 +198,20 @@ def build_broker_pool() -> list[BrokerHandle]:
     return [BrokerHandle(owner=owner, broker=broker, mode=mode)]
 
 
-def _drive(broker, nq: str) -> tuple[int, str]:
+def _drive(broker, nq: str, now: datetime | None = None) -> tuple[int, str]:
     """Today's drive direction, cached for the session once a definitive read lands.
 
     The opening-range read (09:30–09:45 ET) is stable for the rest of the day, so
     we cache the first non-zero result at/after 09:45 and stop refetching bars on
     every snapshot. Before 09:45 the range is still forming: return the provisional
     value for display but never cache it as the day's direction.
+
+    `now` is injectable so run_session(now_et=...) is deterministic — without it,
+    a test (or replay) running after the 16:00 CT session rollover hits the
+    session-closed guard below off the wall clock and reads flat no matter what
+    time it asked for.
     """
-    now = datetime.now(ET)
+    now = now or datetime.now(ET)
     today = trading_day(now)
     # Past the late-afternoon CT session rollover the NEXT trading day's opening
     # range hasn't formed yet, so there's no drive to show. Without this, the
@@ -286,6 +291,33 @@ def _auto_mark_blown(cfg, st, balance: float, account_id: int) -> bool:
     _trade.warning("AUTO-BLOWN acct=%s — balance $%.2f at/below MLL floor $%.2f "
                    "(broker canTrade disregarded)", account_id, balance, floor)
     return True
+
+
+def _ratchet_peak_eod(cfg, st, balance: float, today: str, account_id: int) -> bool:
+    """Trail the MLL floor even for trades TopHat did NOT place (manual wins,
+    signal fires, drift): ProjectX returns no MLL/floor field, and Topstep
+    raises the trailing floor off the END-OF-DAY balance — reconcile() only
+    covers TopHat's own trades. So track the last balance seen each trading
+    day, and on the first sighting of a NEW day fold the prior day's close
+    into peak_equity_eod. Deliberately never ratchets intraday: a mid-day
+    high that fades by the close must not raise the floor (a too-high floor
+    would false-blow live accounts, and blown is terminal). Returns True
+    when state changed (caller persists)."""
+    changed = False
+    if (st.phase in (Phase.EVAL, Phase.FUNDED)
+            and st.last_seen_trading_day and st.last_seen_trading_day != today
+            and st.last_seen_balance > st.peak_equity_eod):
+        _trade.info("EOD FLOOR RATCHET acct=%s — peak $%.2f -> $%.2f (close of %s); "
+                    "floor now $%.2f", account_id, st.peak_equity_eod,
+                    st.last_seen_balance, st.last_seen_trading_day,
+                    min(st.base_balance, st.last_seen_balance - cfg.trailing_drawdown))
+        st.peak_equity_eod = st.last_seen_balance
+        changed = True
+    if st.last_seen_trading_day != today or st.last_seen_balance != balance:
+        st.last_seen_trading_day = today
+        st.last_seen_balance = balance
+        changed = True
+    return changed
 
 
 def _init_state(st, cfg, account) -> None:
@@ -420,8 +452,12 @@ def _build_snapshot(broker, *, mode: str, owner: str = "",
             changed_ids.append(a.account_id)
         elif sync_phase_from_name(st, a.name, cfg):
             changed_ids.append(a.account_id)
-        if not is_practice(a.name) and _auto_mark_blown(cfg, st, a.balance, a.account_id):
-            changed_ids.append(a.account_id)
+        if not is_practice(a.name):
+            # Ratchet FIRST so the blown check judges against the current floor.
+            if _ratchet_peak_eod(cfg, st, a.balance, today, a.account_id):
+                changed_ids.append(a.account_id)
+            if _auto_mark_blown(cfg, st, a.balance, a.account_id):
+                changed_ids.append(a.account_id)
         entry = registry.entry(a.account_id)
         tradeable = (_effective_can_trade(a.can_trade, entry)
                      and not is_practice(a.name)
@@ -933,8 +969,8 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
     registry = load_registry()
     states = load_all()
     nq = broker.resolve_nq_contract()
-    drive, drive_src = _drive(broker, nq)
     now = now_et or datetime.now(ET)
+    drive, drive_src = _drive(broker, nq, now)
     # Trading day (rolls ~4 PM CT). Morning entries fire well before the rollover
     # so this equals the ET calendar date whenever anything actually fires; it
     # only diverges in the evening, where automation never ticks (see _in_window).
@@ -970,6 +1006,9 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
             phase_fixed = True
         elif sync_phase_from_name(st, a.name, cfg):
             phase_fixed = True
+        if not is_practice(a.name) and _ratchet_peak_eod(
+                cfg, st, a.balance, today, a.account_id):
+            phase_fixed = True   # floor moved - persist via the end-of-pass merge
         tradeable[a.account_id] = st
         if sig:
             signal_keys[a.account_id] = sig

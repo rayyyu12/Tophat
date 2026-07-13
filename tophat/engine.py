@@ -95,6 +95,13 @@ class AccountState:
     # --- live automation tracking ---
     payout_ready: bool = False        # 5 winning days banked; awaiting manual withdrawal
     last_fire_date: str = ""          # YYYY-MM-DD an order was placed (no double-fire)
+    # EOD floor trailing for trades TopHat did NOT place (manual wins, drift):
+    # the last broker balance seen and the trading day it was seen on. On the
+    # first sighting of a NEW trading day, the prior day's value ratchets
+    # peak_equity_eod (service._ratchet_peak_eod) — Topstep trails the MLL off
+    # the end-of-day balance, and reconcile() only covers TopHat's own trades.
+    last_seen_trading_day: str = ""
+    last_seen_balance: float = 0.0
     pending_label: str = ""           # trade awaiting outcome reconciliation
     pending_entry_balance: float = 0.0
     pending_target_dollars: float = 0.0

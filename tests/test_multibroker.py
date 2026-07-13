@@ -1,9 +1,15 @@
 """Per-credential independence: each owner runs its own daily rules."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from tophat.broker.mock import MockBroker
 from tophat.server import service
 from tophat.server.service import BrokerHandle
 from tophat.store.config import load_settings, save_settings
+
+# Fixed weekday morning so runs after the 16:00 CT rollover stay deterministic.
+T0946 = datetime(2026, 7, 1, 9, 46, tzinfo=ZoneInfo("America/New_York"))
 
 
 def test_each_owner_nukes_independently():
@@ -21,7 +27,7 @@ def test_each_owner_nukes_independently():
     b2 = MockBroker(n_eval=0, n_funded=1, seed=12)
     pool = [BrokerHandle("alice", b1, "mock"), BrokerHandle("bob", b2, "mock")]
 
-    out = service.run_all_sessions(pool, execute=True)
+    out = service.run_all_sessions(pool, execute=True, now_et=T0946)
 
     nukes = [r for r in out["results"] if r["action"] in ("nuke", "renuke")]
     assert out["orders_placed"] == 2

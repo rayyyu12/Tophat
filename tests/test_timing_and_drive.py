@@ -26,6 +26,10 @@ from tophat.store.config import load_settings, save_settings, update_settings
 from tophat.store.states import load_all, merge_save, save_all
 
 ET = ZoneInfo("America/New_York")
+# Fixed weekday morning: without an injected clock these paths read the REAL
+# time, and any run after the 16:00 CT session rollover (evenings, weekends)
+# sees a flat "session closed" drive and fires nothing.
+T0946 = datetime(2026, 7, 1, 9, 46, tzinfo=ET)
 
 
 def _arm(**kw):
@@ -125,6 +129,20 @@ def test_window_opens_early_for_warmup_and_skips_weekends():
     assert _entry_times(junk) == [(9, 45)]                    # malformed -> default
 
 
+def test_drive_honors_injected_time_across_session_rollover():
+    # run_session(now_et=...) must be deterministic: an injected evening time
+    # reads "session closed" (next trading day, range not formed), an injected
+    # weekday morning reads a real direction - regardless of the wall clock.
+    b = MockBroker(n_eval=1, n_funded=0, seed=9)
+    nq = b.resolve_nq_contract()
+    evening = datetime(2026, 7, 1, 20, 0, tzinfo=ET)   # past 16:00 CT rollover
+    val, src = service._drive(b, nq, evening)
+    assert val == 0 and "session closed" in src
+    morning = datetime(2026, 7, 2, 9, 46, tzinfo=ET)
+    val, _ = service._drive(b, nq, morning)
+    assert val != 0
+
+
 # --- entry grace window ---------------------------------------------------------
 
 def test_late_slot_does_not_fire_off_strategy():
@@ -150,7 +168,8 @@ def test_practice_account_never_fires_or_takes_the_eval_slot():
     real_id = b._accounts[1].account_id
     # Lowest id + never-traded: without the guard this would win the only slot.
     b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-1", 150_000.0, True, True)
-    out = service.run_all_sessions([BrokerHandle("o", b, "mock")], execute=True)
+    out = service.run_all_sessions([BrokerHandle("o", b, "mock")], execute=True,
+                                   now_et=T0946)
     assert out["orders_placed"] == 1
     fired = {r["account_id"] for r in out["results"] if r.get("order_id")}
     assert fired == {real_id}
@@ -163,7 +182,7 @@ def test_practice_account_fires_on_explicit_manual_execute():
     prac_id = b._accounts[0].account_id
     b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-9", 150_000.0, True, True)
     out = service.run_all_sessions([BrokerHandle("o", b, "mock")],
-                                   execute=True, manual=True)
+                                   execute=True, manual=True, now_et=T0946)
     fired = {r["account_id"] for r in out["results"] if r.get("order_id")}
     assert fired == {prac_id}
 
@@ -178,7 +197,7 @@ def test_manual_practice_fire_holds_no_eval_slot():
     real_id = b._accounts[1].account_id
     b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-1", 150_000.0, True, True)
     out = service.run_all_sessions([BrokerHandle("o", b, "mock")],
-                                   execute=True, manual=True)
+                                   execute=True, manual=True, now_et=T0946)
     fired = {r["account_id"] for r in out["results"] if r.get("order_id")}
     assert fired == {prac_id, real_id}
     prac_row = [r for r in out["results"] if r["account_id"] == prac_id][0]
@@ -197,7 +216,7 @@ def test_manual_practice_fire_stays_out_of_the_trade_log():
     prac_id = b._accounts[0].account_id
     b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-9", 150_000.0, True, True)
     pool = [BrokerHandle("o", b, "mock")]
-    out = service.run_all_sessions(pool, execute=True, manual=True)
+    out = service.run_all_sessions(pool, execute=True, manual=True, now_et=T0946)
     assert out["orders_placed"] == 1
     # win the bracket, flatten, reconcile on the next day's manual pass
     b._accounts[0] = BrokerAccount(prac_id, "PRAC-V2-9", 151_550.0, True, True)

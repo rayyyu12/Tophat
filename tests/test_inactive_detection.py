@@ -70,6 +70,45 @@ def test_pending_trade_defers_blown_to_reconcile():
     assert load_all()[aid].phase == Phase.EVAL
 
 
+def test_manual_win_trails_the_floor_at_day_rollover():
+    # ProjectX returns NO MLL field, and reconcile only covers TopHat's own
+    # trades - so a MANUAL day-1 win (+$1,500 -> balance 51,500) must trail the
+    # floor 48,000 -> 49,500 via the observed end-of-day balance. Intraday the
+    # floor must NOT move (a fading mid-day high can't raise it).
+    b, aid = _with_balance(1, 64, 50_000.0)
+    _only_row(b, key="rat1")                        # first sighting seeds the state
+    name = b.list_accounts()[0].name
+    b._accounts[0] = BrokerAccount(aid, name, 51_500.0, True, True)  # manual +$1,500
+    row = _only_row(b, key="rat1b")                 # same trading day - no ratchet
+    assert row["floor"] == 48_000.0
+    assert load_all()[aid].peak_equity_eod == 50_000.0
+    states = load_all()
+    states[aid].last_seen_trading_day = "2026-07-10"   # pretend that was yesterday
+    merge_save(states, [aid])
+    row = _only_row(b, key="rat1c")                 # new trading day -> ratchet
+    st = load_all()[aid]
+    assert st.peak_equity_eod == 51_500.0
+    assert row["floor"] == 49_500.0                 # min(50,000, 51,500 - 2,000)
+    assert row["status"] == "active"                # 51,500 > 49,500: alive
+
+
+def test_blown_against_the_ratcheted_floor():
+    # After the ratchet, a fall to 49,400 is BLOWN (floor 49,500) even though
+    # it sits far above the original 48,000 floor - the user's exact scenario.
+    b, aid = _with_balance(1, 65, 50_000.0)
+    _only_row(b, key="rat2")                        # seed state at 50,000
+    name = b.list_accounts()[0].name
+    b._accounts[0] = BrokerAccount(aid, name, 51_500.0, True, True)
+    _only_row(b, key="rat2b")                       # records the 51,500 close
+    states = load_all()
+    states[aid].last_seen_trading_day = "2026-07-10"
+    merge_save(states, [aid])
+    b._accounts[0] = BrokerAccount(aid, name, 49_400.0, True, True)
+    row = _only_row(b, key="rat2c")
+    assert row["status"] == "blown"
+    assert load_all()[aid].phase == Phase.BLOWN
+
+
 def test_run_session_never_fires_below_mll_and_marks_blown(ctl):
     # Funded fresh floor = min(0, peak - 2,000) = -2,000; a -2,500 balance is dead.
     ctl.set_balance(-2_500.0)

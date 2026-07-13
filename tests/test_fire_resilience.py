@@ -3,10 +3,16 @@
   - one account's broker failure must not stop the rest of the fleet from trading.
 """
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from tophat.broker.mock import MockBroker
 from tophat.server import service
 from tophat.server.service import BrokerHandle
 from tophat.store.config import load_settings, save_settings
+
+# Fixed weekday morning so runs after the 16:00 CT rollover stay deterministic.
+T0946 = datetime(2026, 7, 1, 9, 46, tzinfo=ZoneInfo("America/New_York"))
 
 
 def _arm(max_evals=2):
@@ -30,7 +36,8 @@ def test_flat_account_is_not_closed_before_entry():
 
     CloseCounting.closes = 0
     b = CloseCounting(n_eval=2, n_funded=1, seed=5)   # all flat to start
-    out = service.run_all_sessions([BrokerHandle("o", b, "mock")], execute=True)
+    out = service.run_all_sessions([BrokerHandle("o", b, "mock")], execute=True,
+                                   now_et=T0946)
     assert out["orders_placed"] >= 1
     assert CloseCounting.closes == 0
 
@@ -45,7 +52,8 @@ def test_one_account_failure_does_not_abort_fleet():
             return super().place_bracket(account_id, contract_id, plan, tag=tag)
 
     b = Flaky(n_eval=3, n_funded=0, seed=6)
-    out = service.run_all_sessions([BrokerHandle("o", b, "mock")], execute=True)
+    out = service.run_all_sessions([BrokerHandle("o", b, "mock")], execute=True,
+                                   now_et=T0946)
     errs = [r for r in out["results"] if r.get("error")]
     assert len(errs) == 1                  # the one bad account is recorded, not fatal
     assert out["orders_placed"] >= 1       # the rest of the fleet still traded
