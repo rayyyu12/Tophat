@@ -60,8 +60,7 @@ class TopHatSettings:
     copier_sync_enabled: bool = True
 
     # --- notifications ---
-    # Per-user Discord webhook (Settings page). Consumed by the deploy-side
-    # Watchdog (which prefers it over its local config) and by server-side
+    # Per-user Discord webhook (Settings page). Consumed by server-side
     # posts (copier apply results). Empty = notifications off for this user.
     discord_webhook_url: str = ""
 

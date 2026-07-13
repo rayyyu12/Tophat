@@ -83,6 +83,3 @@ skills-lock.json
 
 # Render migration bundle (contains .secret + login DB + encrypted keys) - NEVER commit
 /tophat-state.tgz
-
-# Watchdog box config - holds the dashboard login since the Render move
-deploy/watchdog_config.json

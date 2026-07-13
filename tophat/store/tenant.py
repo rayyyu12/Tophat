@@ -49,6 +49,7 @@ PER_USER_NAMES = {
     "sim_templates.json",
     "copier_plans",
     "sim_runs",
+    "notify_state.json",
 }
 
 _CURRENT_UID: ContextVar[int | None] = ContextVar("tophat_tenant_uid", default=None)

@@ -1,8 +1,8 @@
 # TopHat Rabbit 🎩🐇
 
 The copier-box bridge service — the second TopHat backend. It lives on the
-Windows machine that runs Tradecopia (the same box as TopHat Watchdog), runs
-24/7, and does the trick nobody watches: every morning before the session it
+Windows machine that runs Tradecopia, runs 24/7, and does the trick nobody
+watches: every morning before the session it
 pulls the day's desired copier arrangement from TopHat, quietly rewrites the
 Tradecopia database while the app is closed, brings the app back up, checks its
 work, and reports back. If anything looks wrong it restores the backup and
@@ -51,6 +51,10 @@ TopHat (Railway/Render) ◀──HTTPS pull──  rabbit.py run     (this box, 
   evening activations/purchases). If TopHat isn't ready (409: plan not
   applied, missing account number, …) it retries every `retry_every_min`
   (15) up to `max_retries` (8), then waits for the next trigger.
+- **Tradecopia heartbeat**: at startup and every `heartbeat_every_s` (300)
+  it POSTs a read-only TC health check (app running, per-firm connections,
+  feeds) to `/api/ops/tc-heartbeat` — TopHat folds it into your premarket
+  warning and morning recap. A silent box shows up there as its own warning.
 - **Between applies it only polls the flag**: `GET /api/ops/tc-poll`, a
   ~30-byte "should I sync now?" check every `poll_interval_s` (60 s). That
   poll is what makes two things land within a minute: the **Sync now**

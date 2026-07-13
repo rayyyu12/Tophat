@@ -22,6 +22,9 @@ ACCOUNT_NAMES_FILE = DATA_DIR / "account_names.json"
 # Nightly OCO probe bookkeeping: the last completed probe night, persisted so a
 # server restart after the probe can't re-probe (and re-alert) the same night.
 OCO_PROBE_FILE = DATA_DIR / "oco_probe_state.json"
+# Per-tenant daily-notification stamps (premarket/recap already sent today), so
+# a mid-morning deploy restart can't double-post to the user's Discord.
+NOTIFY_STATE_FILE = DATA_DIR / "notify_state.json"
 
 # Copier-box (TopHat Rabbit) pairing: the token registry is GLOBAL — a bearer
 # token must resolve to its user before any tenant context exists. The last

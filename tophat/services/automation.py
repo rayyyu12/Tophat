@@ -132,6 +132,14 @@ class Automation:
                     oco_probe.run_probe, self.pool_provider(uid), now_et=now)
             except Exception:
                 log.exception("nightly OCO probe failed uid=%s", uid)
+        # Per-user premarket warning + morning recap to THEIR Discord webhook
+        # (services/daily_notify.py). Deliberately outside the auto_execute
+        # gate: "you forgot to arm" is the premarket warning's whole point.
+        from tophat.services import daily_notify
+        try:
+            await asyncio.to_thread(daily_notify.maybe_send, uid, now)
+        except Exception:
+            log.exception("daily notify failed uid=%s", uid)
         out["next_delay"] = self._next_entry_delay(datetime.now(ET), settings)
         return out
 

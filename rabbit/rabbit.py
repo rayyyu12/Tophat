@@ -1,7 +1,7 @@
 """TopHat Rabbit — the copier-box bridge service.
 
-Runs 24/7 on the Windows machine that runs Tradecopia (sibling of TopHat
-Watchdog). It only ever dials OUT — the box needs no inbound port. Three jobs:
+Runs 24/7 on the Windows machine that runs Tradecopia. It only ever dials
+OUT — the box needs no inbound port. Four jobs:
 
 1. **Apply** (forward sync): pull the desired copier state from TopHat and
    write it into the Tradecopia DB with tc_apply (quit -> backup -> write ->
@@ -9,6 +9,9 @@ Watchdog). It only ever dials OUT — the box needs no inbound port. Three jobs:
 2. **Observe** (reverse sync, plan doc §13): SELECT-only read of follower
    balances/names out of the same DB, POSTed to TopHat after every cycle.
 3. **Report**: push the apply status back; TopHat fans it to Discord.
+4. **Heartbeat**: POST a read-only Tradecopia health check (app up, per-firm
+   connections, feeds) at startup and every ~5 min — it feeds each user's
+   server-side premarket/recap Discord notices (TopHat can't dial in).
 
 Cadence (operator-designed 2026-07-08): no continuous heavy polling. One
 scheduled apply per day at `apply_at` ET (default 22:30 — after activations
@@ -38,6 +41,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -147,6 +152,69 @@ def push_status(cfg: dict, status: dict) -> None:
         json.dumps(status, indent=2), encoding="utf-8")
 
 
+def tc_health(cfg: dict) -> dict:
+    """Read-only Tradecopia health for the TopHat heartbeat: app process up,
+    per-firm connection status, feed health, drops today. Replaces the retired
+    deploy/watchdog.py checks — SELECT-only, safe while the app is running."""
+    out: dict = {"generated_at": datetime.now(ET).isoformat(timespec="seconds"),
+                 "app_running": False, "db_ok": False, "conns": [],
+                 "feeds_bad": {}, "drops_today": []}
+    try:
+        tl = subprocess.run(
+            ["tasklist", "/FI",
+             f"IMAGENAME eq {cfg.get('process_name', 'Tradecopia.exe')}",
+             "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=15).stdout
+        out["app_running"] = cfg.get("process_name", "Tradecopia.exe") in tl
+    except Exception:
+        pass
+
+    def firm(org: str) -> str:
+        o = (org or "").lower()
+        for key, label in (("apex", "Apex"), ("topstep", "Topstep"),
+                           ("lucid", "Lucid"), ("tradeify", "Tradeify")):
+            if key in o:
+                return label
+        return org or "?"
+
+    try:
+        con = sqlite3.connect(f"file:{cfg['db_path']}?mode=ro", uri=True)
+        try:
+            cur = con.cursor()
+            today = datetime.now().strftime("%Y-%m-%d")   # DB stamps local time
+            for org, up, disc in cur.execute(
+                    "SELECT organization, is_connected, disconnected_at FROM entities"):
+                out["conns"].append({"firm": firm(org), "up": bool(up),
+                                     "since": str(disc or "")[:16]})
+                if disc and str(disc)[:10] == today:
+                    state = "reconnected" if up else "still down"
+                    out["drops_today"].append(
+                        f"{firm(org)} dropped {str(disc)[11:16]} local — {state}")
+            for org, n_all, n_bad in cur.execute(
+                    "SELECT e.organization, COUNT(*),"
+                    " SUM(f.connection_status != 'connected')"
+                    " FROM feeds f JOIN entities e ON e.id = f.entity_id"
+                    " GROUP BY e.organization"):
+                if n_bad:
+                    out["feeds_bad"][firm(org)] = [int(n_bad), int(n_all)]
+            out["db_ok"] = True
+        finally:
+            con.close()
+    except Exception:
+        pass
+    return out
+
+
+def push_heartbeat(cfg: dict) -> None:
+    """POST the TC health read to TopHat (feeds the per-user premarket/recap
+    Discord notifications). Best-effort — a miss just ages the last report."""
+    try:
+        with _request(cfg, "/api/ops/tc-heartbeat", tc_health(cfg)):
+            pass
+    except Exception as exc:
+        log(f"heartbeat post failed: {exc}")
+
+
 def push_observed(cfg: dict) -> str:
     """Reverse sync: read the DB (SELECT-only) and POST it. Returns a short
     human summary for the status line ('' when skipped/failed)."""
@@ -251,12 +319,18 @@ def _disarm_retry(state: dict) -> None:
 
 def run_loop(cfg: dict, app: tc_apply.AppController) -> None:
     interval = float(cfg.get("poll_interval_s", 60))
+    hb_every = float(cfg.get("heartbeat_every_s", 300))
+    last_hb = 0.0     # monotonic; 0 = post one immediately at startup
     log(f"rabbit awake - apply daily at {cfg.get('apply_at', '22:30')} ET, "
-        f"flag-poll every {interval:.0f}s against {cfg['tophat_url']}")
+        f"flag-poll every {interval:.0f}s, TC heartbeat every {hb_every:.0f}s "
+        f"against {cfg['tophat_url']}")
     while True:
         try:
             now_et = datetime.now(ET)
             state = load_state()
+            if last_hb == 0.0 or time.monotonic() - last_hb >= hb_every:
+                push_heartbeat(cfg)   # TC health -> per-user Discord notices
+                last_hb = time.monotonic()
             flag = poll_flag(cfg)   # cheap; doubles as the box heartbeat
             trigger = ""
             if flag and flag.get("sync_requested"):

@@ -600,7 +600,10 @@ list of edits the operator must make in Tradecopia and becomes an
 
 ### 12.4 Discord reporting (live today, grows with the stages)
 
-- **Now**: the Watchdog posts a pre-market warning (09:00 + 09:25 ET checks,
+- **AMENDED 2026-07-14**: deploy/watchdog.py is retired — premarket/recap
+  notifications are server-side per user (tophat/services/daily_notify.py),
+  with Tradecopia health arriving via Rabbit's /api/ops/tc-heartbeat.
+- **Was**: the Watchdog posts a pre-market warning (09:00 + 09:25 ET checks,
   silent when all clear) and an always-on 11:00 ET recap (drive, per-account
   outcomes, payout-ready, drops-today) — the recap is the daily heartbeat.
 - **Stage 3+**: tc-apply posts its §5.2 status (applied/noop/aborted/

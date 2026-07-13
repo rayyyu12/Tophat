@@ -1,9 +1,0 @@
-{
-  "webhook_url": "https://discord.com/api/webhooks/...",
-  "tophat_url": "https://YOUR-SERVICE.onrender.com",
-  "tophat_email": "you@example.com",
-  "tophat_password": "your-dashboard-password",
-  "settings_json": "C:\\path\\to\\Project TopHat\\data\\users\\1\\settings.json",
-  "tradecopia_db": "C:\\Users\\you\\AppData\\Roaming\\Tradecopia\\tradecopia-desktop.db",
-  "send_green": false
-}

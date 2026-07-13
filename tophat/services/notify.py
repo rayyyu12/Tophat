@@ -1,10 +1,10 @@
 """Server-side Discord notifications via the per-user webhook (Settings page,
 TopHatSettings.discord_webhook_url).
 
-One tiny embed poster shared by anything in the server that pings the
-operator's channel — the Settings "send test" button and the nightly copier
-(Rabbit) apply results. The deploy-side Watchdog has its own poster on
-purpose: it must keep working when this server is down.
+One tiny embed poster shared by anything in the server that pings a user's
+channel — the Settings "send test" button, the nightly copier (Rabbit) apply
+results, fire-failure alerts, the OCO probe, and the daily premarket/recap
+notices (services/daily_notify.py).
 """
 
 from __future__ import annotations

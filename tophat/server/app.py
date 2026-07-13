@@ -34,7 +34,8 @@ STATIC_DIR = Path(__file__).parent / "static"
 # box-token auth (store/boxes.py) and bind the tenant themselves.
 PUBLIC_PATHS = {"/login", "/api/login", "/api/healthz",
                 "/api/ops/tc-desired", "/api/ops/tc-status",
-                "/api/ops/tc-poll", "/api/ops/tc-observed"}
+                "/api/ops/tc-poll", "/api/ops/tc-observed",
+                "/api/ops/tc-heartbeat"}
 SECURE_COOKIES = os.getenv("TOPHAT_HTTPS", "").lower() in ("1", "true", "yes")
 # How often the WS pushes a snapshot to the UI. Cheap: build_snapshot is cached
 # (SNAPSHOT_TTL), so a fast UI cadence does NOT mean a fast broker poll cadence.
@@ -147,7 +148,7 @@ def create_app() -> FastAPI:
     @app.get("/api/healthz")
     def healthz():
         """Unauthenticated liveness + today's locked drive (process-global cache,
-        no tenant data, no broker calls) — consumed by deploy/premarket_sentinel.py."""
+        no tenant data, no broker calls) — for external uptime checks."""
         return {"ok": True, **service.drive_public()}
 
     @app.get("/login")
@@ -167,8 +168,8 @@ def create_app() -> FastAPI:
 
     @app.get("/api/ops/recap")
     def ops_recap():
-        """Session-authed morning digest for deploy/watchdog.py (API mode) —
-        the watchdog box holds no live state files since the Render move."""
+        """Session-authed morning digest: the payload behind the server-side
+        daily Discord recap (services/daily_notify.py); handy ad hoc too."""
         return service.ops_recap()
 
     @app.get("/api/accounts")
@@ -440,6 +441,18 @@ def create_app() -> FastAPI:
         boxes_store.touch(box_id,
                           apply_at=request.query_params.get("apply_at"))
         return {"sync_requested": boxes_store.sync_requested(box_id)}
+
+    @app.post("/api/ops/tc-heartbeat")
+    def tc_heartbeat(request: Request, body: dict):
+        """Rabbit's Tradecopia health read (app up, per-firm connections,
+        feeds) — stored on the box row for the per-user daily notifications
+        (services/daily_notify.py). Posted at box startup + every ~5 min."""
+        ident = _box_ident(request)
+        if ident is None:
+            return JSONResponse({"error": "unauthorized"}, status_code=401)
+        _uid, box_id = ident
+        boxes_store.record_heartbeat(box_id, body or {})
+        return {"ok": True}
 
     @app.get("/api/ops/tc-desired")
     def tc_desired(request: Request):

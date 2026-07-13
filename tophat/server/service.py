@@ -395,9 +395,9 @@ _NAMES_LOCK = threading.Lock()
 
 def _persist_account_names(ck: str, snap: dict) -> None:
     """Write-through {account_id: broker name} beside the state files so offline
-    tools (deploy/watchdog.py recap) can label accounts without auth or broker
-    calls. Merges across credentials; only touches disk when a name changed.
-    Best-effort — a cache write must never break a snapshot."""
+    tooling can label accounts without auth or broker calls (also feeds
+    ops_recap's labels). Merges across credentials; only touches disk when a
+    name changed. Best-effort — a cache write must never break a snapshot."""
     try:
         names = {str(r["account_id"]): (r.get("broker_name") or r.get("name") or "")
                  for r in snap.get("accounts", [])}
@@ -1245,11 +1245,10 @@ def run_session(broker, *, execute: bool, respect_times: bool = False,
 
 
 def ops_recap() -> dict:
-    """Morning-digest payload for deploy/watchdog.py (API mode): armed state,
-    today's locked drive, reconciled outcomes, still-open trades and
-    payout-ready accounts — assembled from THIS tenant's stores. Exists because
-    prod state moved to Render's persistent disk (2026-07-12): the watchdog box
-    keeps only stale local copies, so it must ask the server, not read files."""
+    """Morning-digest payload: armed state, today's locked drive, reconciled
+    outcomes, still-open trades and payout-ready accounts — assembled from
+    THIS tenant's stores. Feeds the per-user daily Discord recap
+    (services/daily_notify.py) and the session-authed /api/ops/recap."""
     from tophat.store.paths import ACCOUNT_NAMES_FILE
     settings = load_settings()
     today = trading_day(datetime.now(ET))

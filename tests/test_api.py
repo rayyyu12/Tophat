@@ -328,7 +328,7 @@ def test_mirror_override_without_flag_is_raw(client):
 
 
 def test_ops_recap_shape(client):
-    """Watchdog API mode (deploy/watchdog.py): session-authed digest with armed
+    """Session-authed morning digest (feeds services/daily_notify.py): armed
     state, drive, and today's outcomes - served from live tenant stores."""
     r = client.get("/api/ops/recap")
     assert r.status_code == 200

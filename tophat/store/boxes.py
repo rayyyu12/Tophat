@@ -121,6 +121,36 @@ def touch(box_id: str, *, result: str | None = None,
         _save(data)
 
 
+def record_heartbeat(box_id: str, payload: dict) -> None:
+    """Store the box's latest Tradecopia health read (Rabbit posts it at
+    startup and every ~5 min riding its poll loop — TopHat can't call INTO a
+    box behind home NAT, so freshness comes from the box's own cadence)."""
+    with _LOCK:
+        data = _load()
+        b = data["boxes"].get(box_id)
+        if b is None:
+            return
+        b["last_seen"] = _now()
+        b["tc"] = dict(payload or {})
+        b["tc_at"] = _now()
+        _save(data)
+
+
+def latest_heartbeat(uid: int) -> tuple[dict, int] | None:
+    """Newest Tradecopia heartbeat across the user's boxes: (payload,
+    age_seconds), or None when no box has ever reported."""
+    best: tuple[dict, int] | None = None
+    for _bid, b in _load()["boxes"].items():
+        if int(b.get("uid", -1)) != int(uid) or not b.get("tc"):
+            continue
+        age = _seen_ago_s(b.get("tc_at", ""))
+        if age is None:
+            continue
+        if best is None or age < best[1]:
+            best = (b["tc"], age)
+    return best
+
+
 def request_sync(uid: int, box_id: str | None = None) -> int:
     """Flag one box (or ALL of the user's boxes) to sync on its next flag poll.
     Set by the 'Sync now' buttons (Settings + Operations) and automatically
