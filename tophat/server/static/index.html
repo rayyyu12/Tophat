@@ -526,6 +526,16 @@
         <div class="head"><h2>Rabbit</h2><span class="muted" id="opsRabbitMeta"></span></div>
         <div id="opsRabbit"></div>
       </div>
+      <div class="panel hidden" id="opsImportPanel" style="margin-bottom:18px">
+        <div class="head">
+          <h2>Accounts found by Rabbit</h2>
+          <div class="row">
+            <span class="muted" id="opsImportMeta"></span>
+            <button class="btn primary" id="btnImportObservedAll">Import active accounts</button>
+          </div>
+        </div>
+        <div id="opsImports"></div>
+      </div>
       <div class="panel" style="margin-bottom:18px">
         <div class="head"><h2>Next sync — what Rabbit will change</h2><span class="muted" id="opsPlanCount"></span></div>
         <div id="opsPlanLines"></div>
@@ -1802,7 +1812,8 @@ $('#btnSaveAcct').onclick = async()=>{
 };
 
 // ---- operations page ----
-let OPS_PLAN=null, OPS_MIRRORS=[];
+let OPS_PLAN=null, OPS_MIRRORS=[], OPS_OBS={};
+let OPS_IMPORTING=false;
 const FIRM_SHORT={'lucid-50k':'Lucid','tradeify-50k':'Tradeify','apex-50k':'Apex'};
 const PHASE_PILL={eval:'eval',funded:'flip',waiting:'idle',passed:'passed',blown:'blown',retired:'retire'};
 // Rabbit apply outcome -> pill tone (green good, gray nothing-to-do, red trouble)
@@ -1821,6 +1832,7 @@ async function loadOps(){
 }
 
 function renderOps(plan, boxesData, obs){
+  OPS_OBS=obs||{};
   const nMap=plan.lines.filter(x=>x.action!=='BUY').length;
   $('#opsSub').textContent=`Rabbit keeps Tradecopia matched to this page · ${nMap} change${nMap===1?'':'s'} queued · ${OPS_MIRRORS.length} mirror${OPS_MIRRORS.length===1?'':'s'}`;
   const applied=!!plan.applied_at;
@@ -1846,6 +1858,7 @@ function renderOps(plan, boxesData, obs){
   }
 
   renderRabbit(boxesData, obs);
+  renderObservedImports(obs);
 
   // plan lines: the queue Rabbit drains at its next sync
   const host=$('#opsPlanLines'); host.innerHTML='';
@@ -2009,8 +2022,92 @@ function renderRabbit(d, obs){
     row.innerHTML=`<span class="pill flat">observed</span>
       <div class="grow">last balance report ${esc(etStampToLocal(obs.received_at))}
         <div class="sub2">${sm.booked||0} booked · ${sm.anchored||0} anchored · ${sm.stale||0} stale ·
-          ${sm.needs_anchor||0} need anchor · ${sm.proposed||0} proposed onboarding${(sm.proposed||0)===1?'':'s'}</div></div>`;
+          ${sm.needs_anchor||0} need anchor · ${sm.proposed||0} ready to import ·
+          ${sm.ignored||0} skipped</div></div>`;
     host.appendChild(row);
+  }
+}
+
+function renderObservedImports(obs){
+  const panel=$('#opsImportPanel'), host=$('#opsImports');
+  const results=(obs&&obs.results)||[];
+  const ready=results.filter(r=>r.status==='proposed'&&r.importable===true);
+  const skipped=results.filter(r=>r.status==='ignored'||
+    (r.status==='proposed'&&r.importable!==true));
+  panel.classList.toggle('hidden',!ready.length&&!skipped.length);
+  host.innerHTML='';
+  if(!ready.length&&!skipped.length) return;
+
+  $('#opsImportMeta').textContent=`${ready.length} ready · ${skipped.length} skipped`;
+  const all=$('#btnImportObservedAll');
+  all.disabled=OPS_IMPORTING||!ready.length;
+  all.textContent=OPS_IMPORTING?'Importing…':
+    ready.length?`Import active accounts (${ready.length})`:'No active accounts';
+  all.onclick=()=>importObservedAccounts(ready.map(r=>r.name));
+
+  const detail=r=>{
+    const firm=FIRM_SHORT[r.firm]||r.firm||'Unknown firm';
+    const phase=r.phase_hint||'unknown phase';
+    const balance=Number.isFinite(Number(r.balance))
+      ?`$${Number(r.balance).toLocaleString(undefined,{maximumFractionDigits:2})}`
+      :'balance unavailable';
+    const observed=r.observed_at
+      ?String(r.observed_at).replace('T',' ').slice(0,16):'time unavailable';
+    return `${firm} · ${phase} · ${balance} · observed ${observed}`;
+  };
+
+  for(const r of ready){
+    const row=document.createElement('div');
+    row.className='rabbit-row';
+    row.innerHTML=`<span class="pill active">ready</span>
+      <div class="grow"><b class="mono">${esc(r.name)}</b>
+        <div class="sub2">${esc(detail(r))}</div></div>`;
+    const btn=document.createElement('button');
+    btn.className='btn';
+    btn.textContent=OPS_IMPORTING?'Importing…':'Import';
+    btn.disabled=OPS_IMPORTING;
+    btn.setAttribute('aria-label',`Import ${r.name}`);
+    btn.onclick=()=>importObservedAccounts([r.name]);
+    row.appendChild(btn);
+    host.appendChild(row);
+  }
+  for(const r of skipped){
+    const row=document.createElement('div');
+    row.className='rabbit-row';
+    row.innerHTML=`<span class="pill flat">skipped</span>
+      <div class="grow"><b class="mono">${esc(r.name)}</b>
+        <div class="sub2">${esc(r.reason||'Run Rabbit again to refresh import eligibility')}</div></div>`;
+    host.appendChild(row);
+  }
+}
+
+async function importObservedAccounts(names){
+  if(OPS_IMPORTING||!names.length) return;
+  const label=names.length===1?`“${names[0]}”`:`${names.length} active accounts`;
+  const ok=await confirmModal({
+    title:'Import accounts from Tradecopia?',
+    body:`Import ${label} into TopHat. Fresh balances will be anchored now; review and approve their copier mappings next.`,
+    confirmText:'Import'});
+  if(!ok) return;
+  OPS_IMPORTING=true;
+  renderObservedImports(OPS_OBS);
+  try{
+    const r=await jfetch('/api/ops/tc-observed/import',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({names})});
+    const out=await r.json().catch(()=>({}));
+    if(!r.ok){
+      toast(out.error||'Could not import accounts');
+      return;
+    }
+    const n=(out.created||[]).length;
+    if(n) toast(`Imported ${n} account${n===1?'':'s'} — review the copier plan`);
+    else toast((out.skipped&&out.skipped[0]&&out.skipped[0].reason)||'No accounts imported');
+  }catch(e){
+    toast('Could not import accounts');
+  }finally{
+    OPS_IMPORTING=false;
+    await loadOps();
   }
 }
 

@@ -10,7 +10,7 @@ import pytest
 
 from rabbit import tc_apply
 from tests.test_tc_apply import GOOSE, UID, make_db
-from tophat.services.tc_observe import import_observed
+from tophat.services.tc_observe import import_observed, import_proposed_accounts
 from tophat.store import mirrors as MS
 
 TODAY = "2026-07-09"
@@ -155,7 +155,52 @@ def test_unknown_account_becomes_proposal_never_created():
     r = out["results"][0]
     assert r["status"] == "proposed" and r["firm"] == "apex-50k"
     assert r["phase_hint"] == "funded"                     # PA prefix
+    assert r["importable"] is True and r["connected"] is True
     assert set(MS.load_mirrors()) == before                # nothing created
+
+
+def test_unknown_stale_disconnected_or_unknown_firm_is_ignored():
+    out = import_observed(payload(
+        obs("OLD-APEX", 49_000.0, updated_at=STALE, connected=False),
+        obs("MYSTERY-1", 50_000.0, org="Mystery Firm", entity_id="mystery"),
+    ), today=TODAY, now=NOW)
+    old, mystery = out["results"]
+    assert old["status"] == "ignored" and old["importable"] is False
+    assert "offline" in old["reason"] and "older than" in old["reason"]
+    assert mystery["status"] == "ignored" and "could not be inferred" in mystery["reason"]
+    assert out["summary"]["proposed"] == 0
+    assert out["summary"]["ignored"] == 2
+
+
+def test_matched_disconnected_account_never_books():
+    m = MS.create_mirror("apex-50k", account_number="APEX-A")
+    MS.patch_mirror(m.mirror_id, {"start_balance": 50_000.0, "equity": 125.0},
+                    today="2026-07-08")
+    out = import_observed(
+        payload(obs("APEX-A", 49_000.0, connected=False)),
+        today=TODAY, now=NOW)
+    assert out["results"][0]["status"] == "disconnected"
+    assert MS.load_mirrors()[m.mirror_id].equity == 125.0
+
+
+def test_import_proposed_accounts_is_filtered_and_idempotent():
+    p = payload(
+        obs("LFE-NEW", 50_000.0, org="LucidTrading", entity_id="lucid-1"),
+        obs("OLD-APEX", 49_000.0, updated_at=STALE, connected=False),
+    )
+    first = import_proposed_accounts(p, now=NOW)
+    assert [m.account_number for m in first["created"]] == ["LFE-NEW"]
+    assert first["created"][0].firm == "lucid-50k"
+    assert first["created"][0].phase == "eval"
+    assert first["skipped"] == [{
+        "name": "OLD-APEX",
+        "reason": "Tradecopia connection is offline; observation is older than 36 hours",
+    }]
+
+    second = import_proposed_accounts(p, now=NOW)
+    assert second["created"] == []
+    assert {row["name"] for row in second["skipped"]} == {"LFE-NEW", "OLD-APEX"}
+    assert len(MS.load_mirrors()) == 1
 
 
 def test_duplicate_account_numbers_error():
@@ -179,8 +224,9 @@ def test_idempotent_reimport_and_summary():
     out1 = import_observed(p, today=TODAY, now=NOW)
     out2 = import_observed(p, today=TODAY, now=NOW)
     assert out1["summary"] == out2["summary"] == {
-        "booked": 1, "anchored": 0, "stale": 1, "needs_anchor": 0,
-        "proposed": 1, "skipped_leader": 1, "error": 0}
+        "booked": 1, "anchored": 0, "stale": 1, "disconnected": 0,
+        "needs_anchor": 0, "proposed": 1, "ignored": 0,
+        "skipped_leader": 1, "error": 0}
     assert MS.load_mirrors()[m.mirror_id].equity == 237.0
 
 

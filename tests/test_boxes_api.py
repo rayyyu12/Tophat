@@ -186,3 +186,49 @@ def test_tc_observed_roundtrip_books_and_stores(client):
     assert last["summary"]["booked"] == 1 and last["received_at"]
     assert last["accounts"][0]["name"] == "APEX-9"
     assert last["groups"] == groups   # topology stored verbatim for the UI
+
+
+def test_tc_observed_one_click_import_filters_stale_accounts(client):
+    from datetime import datetime
+    from tophat.store import mirrors as MS
+
+    d = _mint(client)
+    tok = {"Authorization": f"Bearer {d['token']}"}
+    now = datetime.now().astimezone().isoformat(timespec="seconds")
+    r = client.post("/api/ops/tc-observed", headers=tok, json={
+        "version": 1,
+        "generated_at": now,
+        "accounts": [
+            {"name": "LFE-NEW", "entity_id": "lucid-live",
+             "entity_type": "demo", "entity_organization": "LucidTrading",
+             "connected": True, "balance": 50_125.0, "updated_at": now},
+            {"name": "OLD-APEX", "entity_id": "APEX-old",
+             "entity_type": "demo", "entity_organization": "ApexTraderFunding",
+             "connected": False, "balance": 49_000.0,
+             "updated_at": "2026-05-29 22:19:47"},
+        ],
+        "groups": [],
+    })
+    assert r.status_code == 200
+    assert r.json()["summary"]["proposed"] == 1
+    assert r.json()["summary"]["ignored"] == 1
+
+    r = client.post("/api/ops/tc-observed/import",
+                    json={"names": ["LFE-NEW", "OLD-APEX"]})
+    assert r.status_code == 200
+    out = r.json()
+    assert [m["account_number"] for m in out["created"]] == ["LFE-NEW"]
+    assert out["skipped"][0]["name"] == "OLD-APEX"
+    assert out["summary"]["anchored"] == 1
+    assert out["summary"]["ignored"] == 1
+    with tenant.as_user(1):
+        mirrors = list(MS.load_mirrors().values())
+    assert len(mirrors) == 1
+    assert mirrors[0].firm == "lucid-50k"
+    assert mirrors[0].start_balance == 50_125.0
+
+    # Repeating the click is safe and never creates a duplicate.
+    again = client.post("/api/ops/tc-observed/import",
+                        json={"names": ["LFE-NEW"]}).json()
+    assert again["created"] == []
+    assert again["skipped"] == [{"name": "LFE-NEW", "reason": "already imported"}]

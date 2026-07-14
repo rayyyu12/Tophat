@@ -556,6 +556,48 @@ def create_app() -> FastAPI:
                     "results": [], "summary": {}}
         return _json.loads(p.read_text(encoding="utf-8"))
 
+    @app.post("/api/ops/tc-observed/import")
+    def tc_observed_import(body: dict):
+        """One-click onboarding from Rabbit's latest observed snapshot.
+
+        Only fresh, connected accounts from a recognized follower firm are
+        eligible. Stale copier-group artifacts remain visible but cannot be
+        imported.
+        """
+        import json as _json
+        from tophat.services import tc_observe
+        from tophat.store.atomic import atomic_write_text
+        from tophat.store.paths import TC_OBSERVED_FILE
+
+        body = body or {}
+        names = body.get("names")
+        if names is not None and not isinstance(names, list):
+            return JSONResponse({"error": "names must be a list"}, status_code=400)
+        p = tenant.resolve(TC_OBSERVED_FILE)
+        if not p.exists():
+            return JSONResponse(
+                {"error": "Rabbit has not reported any accounts yet"},
+                status_code=409)
+        try:
+            snapshot = _json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return JSONResponse(
+                {"error": "the latest Rabbit report could not be read"},
+                status_code=500)
+
+        imported = tc_observe.import_proposed_accounts(snapshot, names=names)
+        # Re-run the normal importer so newly-created fresh mirrors immediately
+        # capture their balance anchor and disappear from the proposal queue.
+        out = tc_observe.import_observed(snapshot, today=_today_et())
+        snapshot.update(out)
+        atomic_write_text(p, _json.dumps(snapshot, indent=2))
+        service.invalidate_snapshot_cache()
+        return {
+            "created": [mirror_sync.public_view(m) for m in imported["created"]],
+            "skipped": imported["skipped"],
+            **out,
+        }
+
     # --- simulation: backtest + Monte Carlo over the cached NQ minute bars ---
     @app.get("/api/sim/meta")
     def sim_meta():
