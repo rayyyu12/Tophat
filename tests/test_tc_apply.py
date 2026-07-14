@@ -178,7 +178,7 @@ def test_create_group_from_scratch(tmp_path):
     assert st["result"] == "applied", st["detail"]
     assert st["changes"] == {"groups_created": 1, "groups_dropped": 0,
                              "followers_upserted": 2, "followers_dropped": 0,
-                             "feeds_cleared": 3}
+                             "feeds_cleared": 0}
     g = rows(db, "SELECT name, user_id, status, disable_replication_on_reconcile,"
                  " position_reconciler_enabled, auto_close_follower_positions,"
                  " prevent_hedging FROM groups")
@@ -189,7 +189,7 @@ def test_create_group_from_scratch(tmp_path):
                    " account_name, contract_type FROM group_follower_accounts ORDER BY id")
     assert fol == [(201, 1.0, 1, "", "APEX-A", "Standard"),
                    (202, 0.8, 0, "user_manual", "APEX-B", "Standard")]
-    # feeds rebuilt by "boot" for every account, exactly one row each
+    # feeds are never touched (hard rule 3) - the seeded rows all survive
     assert sorted(r[0] for r in rows(db, "SELECT account_id FROM feeds")) \
         == [101, 102, 201, 202, 203]
     assert app.quits == 1 and app.starts == 1
@@ -346,7 +346,7 @@ def test_fleet_scale_apply_and_reassign(tmp_path):
     assert st["result"] == "applied", st["detail"]
     assert st["changes"] == {"groups_created": 12, "groups_dropped": 0,
                              "followers_upserted": 30, "followers_dropped": 0,
-                             "feeds_cleared": 42}
+                             "feeds_cleared": 0}
     assert len(rows(db, "SELECT id FROM groups")) == 12
     assert len(rows(db, "SELECT id FROM group_follower_accounts")) == 30
     # re-run -> noop (group identity stable at scale)
@@ -398,17 +398,22 @@ def test_verify_failure_rolls_back(tmp_path):
     assert app.starts == 2                        # boot for verify + boot after restore
 
 
-def test_apply_verifies_without_feeds(tmp_path):
+def test_apply_verifies_and_never_touches_feeds(tmp_path):
     """The updated Tradecopia (goose 20260628000001) keeps an EMPTY feeds table
-    even in steady state, so verify must pass on intact rows alone - requiring
-    feeds rolled back two correct applies on 2026-07-13."""
+    even in steady state and never rebuilds deleted rows, so (a) verify must
+    pass on intact copier rows alone (requiring feeds rolled back two correct
+    applies on 2026-07-13) and (b) the writer must not delete feeds (deleting
+    them killed replication: copied orders sat PendingNew, 2026-07-14)."""
     db = make_db(tmp_path)
-    app = FakeApp(db, boot="noop")                # boot never recreates feeds
+    con = sqlite3.connect(db)
+    con.execute("DELETE FROM feeds")               # the live box's actual state
+    con.commit(); con.close()
+    app = FakeApp(db, boot="noop")                 # boot never recreates feeds
     st = tc_apply.run(desired([grp("PRAC-1", ("APEX-A", 1.0, True))]),
                       cfg_for(db, tmp_path), app, force_window=True)
     assert st["result"] == "applied", st["detail"]
-    # touched accounts' feeds stay cleared and never come back - still applied
-    assert rows(db, "SELECT id FROM feeds WHERE account_id IN (101, 201)") == []
+    assert st["changes"]["feeds_cleared"] == 0
+    assert rows(db, "SELECT id FROM feeds") == []  # untouched either way
 
 
 def test_settle_window_catches_late_group_deletion(tmp_path, monkeypatch):

@@ -5,7 +5,11 @@ rabbit/fixtures.md. Standard library only. The hard rules (§10), enforced here:
 
   1. never write while the Tradecopia process exists (exclusive-lock check)
   2. never touch accounts / entities / tokens
-  3. never insert feeds — delete and let boot rebuild
+  3. never touch feeds AT ALL (2026-07-14 hard lesson: the original rule was
+     "delete and let boot rebuild", but on goose 20260628000001 the app never
+     rebuilds them — and without its feed rows an account's copied orders are
+     created but sit PendingNew forever, silently untransmitted. Feeds are
+     recreated only by reconnecting the entity in the Tradecopia UI.)
   4. never force-kill the app
   5. never write without a same-run backup of db+wal+shm
   6. guard mismatch (schema version, user id, names, open position) = abort
@@ -209,7 +213,7 @@ def resolve(desired: list[GroupSpec], st: DbState, guard_goose: int,
     for g in desired:
         leader = acct(g.leader)
         desired_leader_ids.add(leader["id"])
-        # reuse the leader's existing group (stable identity, minimal feed churn)
+        # reuse the leader's existing group (stable identity, minimal churn)
         existing_gid = next((gid for gid, lrow in st.leaders.items()
                              if lrow["id"] == leader["id"]), None)
         if existing_gid is None:
@@ -217,7 +221,6 @@ def resolve(desired: list[GroupSpec], st: DbState, guard_goose: int,
             ops.groups_create.append({"group_id": gid,
                                       "name": f"TopHat {leader['name']}",
                                       "leader": leader})
-            ops.feeds_clear.add(leader["id"])
         else:
             gid = existing_gid
         ops.group_of_leader[g.leader] = gid
@@ -243,18 +246,15 @@ def resolve(desired: list[GroupSpec], st: DbState, guard_goose: int,
                        or cur["replicate"] != target["replicate"])
             if changed:
                 ops.follower_upserts.append(target)
-                ops.feeds_clear.add(frow["id"])
 
     # drops: current followers not desired anywhere
     for fid, row in st.followers.items():
         if fid not in desired_follower_ids:
             ops.follower_deletes.append(fid)
-            ops.feeds_clear.add(fid)
     # drops: groups whose leader is not a desired leader
     for gid, lrow in st.leaders.items():
         if lrow["id"] not in desired_leader_ids:
             ops.groups_drop.append(gid)
-            ops.feeds_clear.add(lrow["id"])
     # a group row without any leader row is an orphan the app would auto-delete;
     # sweep it too so we never leave one behind
     for gid in st.groups:
@@ -286,8 +286,6 @@ def describe(ops: Ops) -> list[str]:
                    f"scale={f['scale']} replicate={f['replicate']}")
     for fid in ops.follower_deletes:
         out.append(f"DELETE follower row {fid}")
-    if ops.feeds_clear:
-        out.append(f"CLEAR feeds for accounts {sorted(ops.feeds_clear)}")
     return out or ["no changes - desired state already in place"]
 
 
@@ -330,8 +328,8 @@ def apply_ops(con: sqlite3.Connection, ops: Ops, guard_user: str) -> None:
         cur.execute("DELETE FROM group_follower_accounts WHERE group_id = ?", (gid,))
         cur.execute("DELETE FROM group_leader_accounts WHERE group_id = ?", (gid,))
         cur.execute("DELETE FROM groups WHERE id = ?", (gid,))
-    for aid in sorted(ops.feeds_clear):
-        cur.execute("DELETE FROM feeds WHERE account_id = ?", (aid,))
+    # feeds are NEVER touched (hard rule 3): the app doesn't rebuild them and
+    # an account without its feed row copies nothing - orders sit PendingNew
     con.commit()
 
 
