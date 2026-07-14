@@ -139,26 +139,36 @@ def test_tradeify_rider_moves_off_alive_but_idle_leader():
     assert mv and "no eval slot" in mv[0].reason
 
 
-def test_lucid_evals_have_no_intake_gate():
-    # Lockstep twins inherit the leaders' own 2-slots/day pacing - all of them
-    # stay mapped.
+def test_lucid_intake_two_per_day_depth_first():
+    # Operator rule (2026-07-14): at most 2 evals TRADE per firm per day -
+    # lockstep twins included. Under drivers-first pairing every mapped twin
+    # rides a slot holder and trades daily, so the intake gate is the pacing.
     for _ in range(4):
         MS.create_mirror("lucid-50k")
     ms = MS.load_mirrors()
-    plan = cp.build_plan([L(1), L(2), L(3), L(4)], ms, TODAY)
-    assert all(d.leader_id is not None for d in plan.desired.values())
+    ids = sorted(ms)
+    ms[ids[2]].days_traded = 3                    # most advanced -> priority
+    ms[ids[1]].leader_id = 1                      # mapped, but loses its slot
+    plan = cp.build_plan([L(1), L(2)], ms, TODAY)
+    mapped = [k for k in ids if plan.desired[k].leader_id is not None]
+    assert set(mapped) == {ids[2], ids[0]}        # 2/day, depth-first
+    un = lines_for(plan, ids[1], "UNMAP")
+    assert un and "intake slot" in un[0].reason
 
 
 def test_lucid_twins_ride_the_scheduled_drivers():
-    # 6 evals, two advanced (they hold tomorrow's 2 depth-first slots): all 4
-    # twins must land on those two, split evenly - never on an idle leader
-    # (2026-07-13: least-loaded spread parked 3 of 4 twins on idle evals).
+    # 6 evals, two advanced (they hold tomorrow's 2 depth-first slots): the 2
+    # intake twins must land on those two, one each - never on an idle leader
+    # (2026-07-13: least-loaded spread parked 3 of 4 twins on idle evals; the
+    # same night, ungated drivers-first primed all 4 twins for one day).
     leaders = [L(1), L(2), L(3, days=1), L(4), L(5, days=1), L(6)]
     for _ in range(4):
         MS.create_mirror("lucid-50k")
     plan = cp.build_plan(leaders, MS.load_mirrors(), TODAY)
-    got = sorted(d.leader_id for d in plan.desired.values())
-    assert got == [3, 3, 5, 5]
+    got = sorted(d.leader_id for d in plan.desired.values()
+                 if d.leader_id is not None)
+    assert got == [3, 5]                          # one twin per driver
+    assert sum(1 for d in plan.desired.values() if d.leader_id is None) == 2
 
 
 def test_lucid_twin_moves_off_alive_but_idle_leader():
@@ -183,15 +193,16 @@ def test_lucid_twin_keeps_its_driver():
 
 
 def test_lucid_drivers_are_per_login():
-    # Slot caps are per API key: with 2 slots/login, each login's most-advanced
-    # evals drive - a twin can ride login B's slot holder too.
+    # Slot caps are per API key: with 1 slot/login, each login's most-advanced
+    # eval drives - a twin can ride login B's slot holder too.
     leaders = [L(1, days=5, owner="A"), L(2, owner="A"), L(3, owner="A"),
                L(4, days=4, owner="B"), L(5, owner="B")]
     for _ in range(4):
         MS.create_mirror("lucid-50k")
     plan = cp.build_plan(leaders, MS.load_mirrors(), TODAY, eval_slots=1)
-    got = sorted(d.leader_id for d in plan.desired.values())
-    assert got == [1, 1, 4, 4]                        # only the two slot holders
+    got = sorted(d.leader_id for d in plan.desired.values()
+                 if d.leader_id is not None)
+    assert got == [1, 4]                          # the intake pair, one per driver
 
 
 def test_lucid_eval_never_downsizes():
@@ -486,11 +497,12 @@ def test_fleet_scale_pairing_stays_lawful_and_deterministic(tmp_path):
     by_firm: dict[str, list] = {}
     for mid, d in plan.desired.items():
         by_firm.setdefault(ms[mid].firm, []).append(d)
-    # lucid: every twin rides a driver, spread within one of even
-    lucid_leads = [d.leader_id for d in by_firm["lucid-50k"]]
+    # lucid: intake-gated to 2/day, each intake twin on a DIFFERENT driver
+    lucid_leads = [d.leader_id for d in by_firm["lucid-50k"]
+                   if d.leader_id is not None]
+    assert len(lucid_leads) == cp.CLONE_INTAKE_PER_DAY
     assert all(l in drivers for l in lucid_leads)
-    counts = [lucid_leads.count(l) for l in drivers]
-    assert max(counts) - min(counts) <= 1
+    assert len(set(lucid_leads)) == len(lucid_leads)
     # tradeify: intake-gated to 2/day, riding driven leaders only
     tr = [d.leader_id for d in by_firm["tradeify-50k"] if d.leader_id is not None]
     assert len(tr) == cp.CLONE_INTAKE_PER_DAY and all(l in drivers for l in tr)
@@ -516,9 +528,9 @@ def test_fleet_scale_pairing_stays_lawful_and_deterministic(tmp_path):
     names = {l.account_id: l.name for l in leaders}
     payload = tc_export.desired_from_mirrors(MS.load_mirrors(), names, 0, TODAY)
     followers = [f["account"] for g in payload["groups"] for f in g["followers"]]
-    assert len(followers) == 15               # 10 lucid + 2 tradeify + 2+1 apex
+    assert len(followers) == 7                # 2 lucid + 2 tradeify + 2+1 apex
     assert len(followers) == len(set(followers))
-    assert len(payload["groups"]) == 6        # 4 drivers + eval channel + nuke channel
+    assert len(payload["groups"]) == 5        # 3 drivers used + eval + nuke channel
 
 
 def test_same_state_same_plan():

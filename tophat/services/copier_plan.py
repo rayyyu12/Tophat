@@ -30,14 +30,14 @@ from tophat.store.paths import COPIER_PLANS_DIR
 APEX_INTAKE_PER_DAY = 2
 APEX_NUKE_SLOTS = 1
 
-# Non-lockstep clone evals (Tradeify 0.8x) follow the fleet's eval discipline
-# too: at most this many riding the pack on any day (operator decision
-# 2026-07-09 — same 2-evals/day rule as the Topstep scheduler and the Apex
-# intake). Lockstep 1.0x twins (Lucid) need no gate: a twin only trades when
-# its own leader holds a Topstep eval slot, so it inherits that pacing — which
-# is exactly why pairing targets the slot HOLDERS (the depth-first drivers),
-# never an alive-but-idle leader (operator report 2026-07-13: twins spread
-# least-loaded across the pack sat on idle evals and traded nothing).
+# Clone evals (Lucid 1.0x, Tradeify 0.8x) follow the fleet's eval discipline:
+# at most this many TRADE per follower firm on any day — the same 2-evals/day
+# rule as the Topstep scheduler and the Apex intake (operator rule, reaffirmed
+# 2026-07-14). Under drivers-first pairing every MAPPED eval mirror rides a
+# slot-holding leader and would trade daily, so this gate — not the pairing —
+# is each firm's per-day pacing. (The old "lockstep twins need no gate" note
+# assumed least-loaded spread across idle leaders; drivers-first replaced that
+# on 2026-07-13, and without a gate all four Lucid twins primed for one day.)
 CLONE_INTAKE_PER_DAY = 2
 
 # Lucid twin throttle: stop buying twins while this many passed twins already
@@ -228,15 +228,15 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
     apex_evals.sort(key=lambda m: (-m.days_traded, m.mirror_id))
     intake_today = {m.mirror_id for m in apex_evals[:APEX_INTAKE_PER_DAY]}
 
-    # ---- scaled-clone (non-lockstep) eval intake, per firm ----
-    scaled_evals: dict[str, list[MirrorAccount]] = {}
+    # ---- clone-firm eval intake, per firm (depth-first, ALL clone firms) ----
+    clone_evals: dict[str, list[MirrorAccount]] = {}
     for mid in mids:
         m = mirrors[mid]
         if (m.phase == "eval" and m.enabled and not m.terminal
-                and get_firm(m.firm).copier_scale_eval < 1.0 - 1e-9):
-            scaled_evals.setdefault(m.firm, []).append(m)
+                and m.firm != APEX.key):    # apex has its own channel intake
+            clone_evals.setdefault(m.firm, []).append(m)
     clone_intake_today: set[str] = set()
-    for lst in scaled_evals.values():
+    for lst in clone_evals.values():
         lst.sort(key=lambda m: (-m.days_traded, m.mirror_id))
         clone_intake_today.update(m.mirror_id for m in lst[:CLONE_INTAKE_PER_DAY])
 
@@ -308,7 +308,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
             # 0.8x) neither dies in lockstep nor has a DLL backstop, so a copied
             # stopless entry can run unbounded. Never pair it to a near-floor leader.
             guard = firm.copier_scale_eval < 1.0 - 1e-9
-            if guard and mid not in clone_intake_today:
+            if mid not in clone_intake_today:
                 plan.desired[mid] = Desired(None, "", want_mult)
                 if m.leader_id is not None:
                     plan.lines.append(PlanLine(

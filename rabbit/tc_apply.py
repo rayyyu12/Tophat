@@ -339,7 +339,14 @@ def apply_ops(con: sqlite3.Connection, ops: Ops, guard_user: str) -> None:
 
 def verify_state(db_path: str | Path, desired: list[GroupSpec],
                  ops: Ops) -> tuple[bool, str]:
-    """Post-boot acceptance: our rows survived reconciliation and feeds exist."""
+    """Post-boot acceptance: our group/leader/follower rows survived the app's
+    boot reconciliation.
+
+    Feeds are deliberately NOT checked. The 20260521 recon saw one
+    balance_polling feed per account, but on goose 20260628000001 the live
+    feeds table sits EMPTY in steady state - app running, every entity
+    connected, copying configured (observed 2026-07-14). Requiring feeds
+    rolled back two correct applies on 2026-07-13."""
     con = open_ro(db_path)
     try:
         st = read_state(con)
@@ -359,32 +366,30 @@ def verify_state(db_path: str | Path, desired: list[GroupSpec],
                     or abs(frow["scale"] - f.scale) > 1e-9
                     or frow["replicate"] != (1 if f.replicate else 0)):
                 return False, f"follower row for {f.account!r} wrong/missing after boot"
-    missing_feeds = {aid for aid in ops.managed_accounts
-                     if aid not in st.feed_account_ids}
-    if missing_feeds:
-        return False, f"feeds not rebuilt for accounts {sorted(missing_feeds)}"
-    return True, "groups and feeds verified"
+    return True, "copier rows verified"
 
 
 def wait_verified(db_path: str | Path, desired: list[GroupSpec], ops: Ops,
-                  timeout_s: float, poll_s: float = 5.0) -> tuple[bool, str]:
-    """Poll verify_state until it passes or timeout_s runs out.
+                  settle_s: float, poll_s: float = 5.0) -> tuple[bool, str]:
+    """Watch the rows through the app's boot window before declaring victory.
 
-    Row damage (a group/leader/follower row missing or wrong) is decisive —
-    the app rejected the write at boot and more waiting cannot restore it, so
-    that fails immediately. Missing FEEDS are transient: the app recreates
-    them only after each firm entity finishes reconnecting, which can take
-    minutes after a cold relaunch (2026-07-13: a correct first live apply
-    rolled back because the old fixed 45 s boot wait expired first)."""
-    deadline = time.monotonic() + timeout_s
+    The rows are committed before the relaunch, so the only failure this can
+    catch is the app DELETING or rewriting them while it boots. Any observed
+    damage fails immediately (waiting cannot restore it); a clean run to the
+    end of the settle window passes. Read errors are boot-transient - retried,
+    and only reported if they persist through the whole window."""
+    deadline = time.monotonic() + max(0.0, settle_s)
+    last: tuple[bool, str] = (False, "verify never ran")
     while True:
         try:
             ok, why = verify_state(db_path, desired, ops)
-            transient = not ok and why.startswith("feeds not rebuilt")
+            if not ok:
+                return False, why           # app rejected the write - decisive
+            last = (True, why)
         except Exception as exc:            # mid-boot read hiccup: keep trying
-            ok, why, transient = False, f"verify read failed ({exc})", True
-        if ok or not transient or time.monotonic() >= deadline:
-            return ok, why
+            last = (False, f"verify read failed ({exc})")
+        if time.monotonic() >= deadline:
+            return last
         time.sleep(poll_s)
 
 
@@ -535,12 +540,16 @@ def read_observed(db_path: str | Path, guard_goose: int, guard_user: str, *,
             followers_by_group.setdefault(gid, []).append({
                 "account": str(fname or ""), "scale": float(scale),
                 "replicate": bool(repl), "contract_type": str(ctype or "")})
+        # prefetched: an execute() on the cursor INSIDE the groups loop would
+        # reset the loop's own result set, truncating the report to the first
+        # group (live incident 2026-07-14 - the Operations page showed one of
+        # two groups and flagged the other's followers as not copying)
+        leader_by_group = {gid: str(name or "") for gid, name in cur.execute(
+            "SELECT group_id, account_name FROM group_leader_accounts")}
         groups = []
         for gid, gname, gstatus in cur.execute("SELECT id, name, status FROM groups"):
-            lrow = cur.execute("SELECT account_name FROM group_leader_accounts"
-                               " WHERE group_id = ?", (gid,)).fetchone()
             groups.append({"group": str(gname or ""), "status": str(gstatus or ""),
-                           "leader": str(lrow[0]) if lrow and lrow[0] else "",
+                           "leader": leader_by_group.get(gid, ""),
                            "followers": sorted(followers_by_group.get(gid, []),
                                                key=lambda f: f["account"])})
         groups.sort(key=lambda g: g["leader"])
@@ -649,18 +658,18 @@ def run(desired_dict: dict, cfg: dict, app: AppController, *,
                            ops.summary(), backup_dir=str(backup))
         con.close()
 
-        # ---- relaunch + verify (feeds return only after entities reconnect,
-        # so wait on the condition, not a fixed boot delay; with no relaunch
-        # nothing can rebuild feeds, so don't sit out the timeout for it)
+        # ---- relaunch + verify (rows must SURVIVE the boot reconciliation, so
+        # watch them through a settle window; with no relaunch there is no
+        # reconciliation to survive, so a single check suffices)
         relaunched = was_running or bool(cfg.get("start_always"))
         if relaunched:
             app.start()
         ok, why = wait_verified(
             db_path, desired, ops,
-            float(cfg.get("verify_timeout_s", 300)) if relaunched else 0.0)
+            float(cfg.get("verify_settle_s", 90)) if relaunched else 0.0)
         if ok:
             return _status("applied", why, plan_date, started, ops.summary(),
-                           {"groups_ok": True, "feeds_rebuilt": True},
+                           {"groups_ok": True},
                            backup_dir=str(backup))
 
         # ---- verify failed: quit, restore, relaunch, alert loudly
@@ -671,7 +680,7 @@ def run(desired_dict: dict, cfg: dict, app: AppController, *,
                                f"VERIFY FAILED ({why}) and the app will not quit "
                                f"for restore - RESTORE BY HAND from {backup}",
                                plan_date, started, ops.summary(),
-                               {"groups_ok": False, "feeds_rebuilt": False},
+                               {"groups_ok": False},
                                backup_dir=str(backup), restore_failed=True)
         try:
             restore_backup(db_path, backup)
@@ -679,13 +688,13 @@ def run(desired_dict: dict, cfg: dict, app: AppController, *,
             return _status("rolled_back",
                            f"VERIFY FAILED ({why}); RESTORE FAILED ({exc}) - "
                            f"restore by hand from {backup}", plan_date, started,
-                           ops.summary(), {"groups_ok": False, "feeds_rebuilt": False},
+                           ops.summary(), {"groups_ok": False},
                            backup_dir=str(backup), restore_failed=True)
         if was_running or cfg.get("start_always"):
             app.start()
         return _status("rolled_back", f"verify failed ({why}); backup restored",
                        plan_date, started, ops.summary(),
-                       {"groups_ok": False, "feeds_rebuilt": False},
+                       {"groups_ok": False},
                        backup_dir=str(backup))
 
     except Abort as exc:

@@ -18,7 +18,7 @@
   "blackout_end": "16:10",
 
   "quit_timeout_s": 60,
-  "verify_timeout_s": 300,
+  "verify_settle_s": 90,
   "backups_dir": "backups",
   "backup_keep_days": 30,
   "start_always": true,

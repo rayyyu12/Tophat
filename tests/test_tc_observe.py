@@ -97,6 +97,33 @@ def test_reader_reports_copier_topology(tmp_path):
     assert "PRAC-1" not in {a["name"] for a in out["accounts"]}
 
 
+def test_reader_reports_every_group(tmp_path):
+    """Regression (live 2026-07-14): the leader lookup used to re-execute on the
+    cursor that was still iterating the groups SELECT, truncating the report to
+    the FIRST group - the Operations page showed one of two groups and flagged
+    the other's followers as 'connected, not copying'."""
+    db = make_db(tmp_path)
+    con = sqlite3.connect(db)
+    for i, (leader, follower, aid) in enumerate(
+            [("PRAC-1", "APEX-A", 201), ("PRAC-2", "APEX-B", 202)]):
+        gid = f"g{i + 1}"
+        con.execute("INSERT INTO groups (id, name, user_id, status) VALUES"
+                    " (?, ?, ?, 'active')", (gid, f"TopHat {leader}", UID))
+        con.execute("INSERT INTO group_leader_accounts (id, group_id, entity_id,"
+                    " account_name) VALUES (?, ?, 'topstepx-x', ?)",
+                    (101 + i, gid, leader))
+        con.execute("INSERT INTO group_follower_accounts (id, group_id, entity_id,"
+                    " scale, contract_type, account_name, replicate)"
+                    " VALUES (?, ?, 'APEX-demo', 1.0, 'Standard', ?, 1)",
+                    (aid, gid, follower))
+    con.commit(); con.close()
+
+    out = tc_apply.read_observed(db, GOOSE, UID)
+    assert [(g["leader"], [f["account"] for f in g["followers"]])
+            for g in out["groups"]] == [("PRAC-1", ["APEX-A"]),
+                                        ("PRAC-2", ["APEX-B"])]
+
+
 def test_reader_groups_empty_when_no_copier_setup(tmp_path):
     out = tc_apply.read_observed(make_db(tmp_path), GOOSE, UID)
     assert out["groups"] == []

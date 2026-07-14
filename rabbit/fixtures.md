@@ -12,8 +12,9 @@ Operator sign-off: PENDING — review the §3 corrections below before Stage 2 (
 | `goose_db_version` (MAX version_id) | `20260521000000` |
 | Process name | `Tradecopia.exe` (single process; used by deploy/watchdog.py since 2026-07-07) |
 | Launch exe | `C:\Program Files\Tradecopia Solutions Inc\Tradecopia\Tradecopia.exe` (verified present; no args) |
-| App log | `tradecopia-desktop.log.enc` — **encrypted, unreadable**. `tradecopia-desktop-logs.db` is report/sync data only, no boot markers. → verify POLLS the DB until feeds reappear, up to `verify_timeout_s` (default 300 s). |
-| Typical boot duration | Boot + full entity reconnect exceeds 45 s (2026-07-13: the original fixed 45 s `boot_wait_s` rolled back a correct apply because feeds had not been rebuilt yet). Replaced with condition-polling `verify_timeout_s`. |
+| App log | `tradecopia-desktop.log.enc` — **encrypted, unreadable**. `tradecopia-desktop-logs.db` is report/sync data only, no boot markers. → verify watches the written ROWS through a `verify_settle_s` window (default 90 s); any damage = decisive rollback. |
+| Feeds (**CORRECTION 2026-07-14, goose 20260628000001**) | The 20260521 recon saw one `balance_polling` feed per account; on the UPDATED app the live `feeds` table sits **EMPTY in steady state** — app running, all entities connected, copying configured. Feeds are therefore NOT part of verify (requiring them rolled back two correct applies on 2026-07-13). The writer still deletes feed rows for touched accounts (harmless; delete-only rule stands). |
+| Typical boot duration | Entity reconnect completes within ~2 min of relaunch (2026-07-13 observations). Verify's settle window (90 s) covers the boot-reconciliation risk, not feeds. |
 | Tradecopia user_id | `9931744e-779b-4bdf-8782-1a0eebedc2ac` (single row in `users`, matches every `entities`/`groups` row) |
 
 ## Live account map (9 accounts, 2026-07-08)

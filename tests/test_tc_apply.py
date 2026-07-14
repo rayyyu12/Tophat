@@ -138,7 +138,7 @@ class FakeApp:
 
 def cfg_for(db: Path, tmp_path: Path) -> dict:
     return {"db_path": str(db), "guard_goose": GOOSE, "guard_user": UID,
-            "verify_timeout_s": 0, "quit_timeout_s": 5,
+            "verify_settle_s": 0, "quit_timeout_s": 5,
             "backups_dir": str(tmp_path / "backups")}
 
 
@@ -398,36 +398,37 @@ def test_verify_failure_rolls_back(tmp_path):
     assert app.starts == 2                        # boot for verify + boot after restore
 
 
-def test_verify_polls_until_slow_feed_rebuild_lands(tmp_path, monkeypatch):
-    """Feeds reappear only after each entity finishes reconnecting - minutes
-    after a cold relaunch, not the old fixed 45 s (the 2026-07-13 first live
-    apply rolled back exactly this way). wait_verified must poll, not fail on
-    the first look."""
+def test_apply_verifies_without_feeds(tmp_path):
+    """The updated Tradecopia (goose 20260628000001) keeps an EMPTY feeds table
+    even in steady state, so verify must pass on intact rows alone - requiring
+    feeds rolled back two correct applies on 2026-07-13."""
     db = make_db(tmp_path)
-    app = FakeApp(db, boot="noop")                # start() rebuilds nothing yet
-    polls = {"n": 0}
-
-    def reconnect_finishes(_seconds):             # the wait between two polls
-        polls["n"] += 1
-        FakeApp(db).start()                       # boot="rebuild": feeds return
-
-    monkeypatch.setattr(tc_apply.time, "sleep", reconnect_finishes)
-    cfg = dict(cfg_for(db, tmp_path), verify_timeout_s=60)
-    st = tc_apply.run(desired([grp("PRAC-1", ("APEX-A", 1.0, True))]),
-                      cfg, app, force_window=True)
-    assert st["result"] == "applied", st["detail"]
-    assert polls["n"] >= 1                        # first look failed, poll saved it
-
-
-def test_verify_times_out_when_feeds_never_return(tmp_path):
-    db = make_db(tmp_path)
-    app = FakeApp(db, boot="noop")                # entities never reconnect
-    before = table_dump(db)
+    app = FakeApp(db, boot="noop")                # boot never recreates feeds
     st = tc_apply.run(desired([grp("PRAC-1", ("APEX-A", 1.0, True))]),
                       cfg_for(db, tmp_path), app, force_window=True)
+    assert st["result"] == "applied", st["detail"]
+    # touched accounts' feeds stay cleared and never come back - still applied
+    assert rows(db, "SELECT id FROM feeds WHERE account_id IN (101, 201)") == []
+
+
+def test_settle_window_catches_late_group_deletion(tmp_path, monkeypatch):
+    """Rows are committed before the relaunch, so the risk verify guards is the
+    app DELETING them during boot reconciliation - which can land seconds in.
+    The settle window must keep watching and roll back on late damage."""
+    db = make_db(tmp_path)
+    app = FakeApp(db, boot="noop")
+    before = table_dump(db)
+
+    def reconciliation_rejects(_seconds):          # fires between two polls
+        FakeApp(db, boot="eat_group").start()
+
+    monkeypatch.setattr(tc_apply.time, "sleep", reconciliation_rejects)
+    cfg = dict(cfg_for(db, tmp_path), verify_settle_s=60)
+    st = tc_apply.run(desired([grp("PRAC-1", ("APEX-A", 1.0, True))]),
+                      cfg, app, force_window=True)
     assert st["result"] == "rolled_back"
-    assert "feeds not rebuilt" in st["detail"]
-    assert table_dump(db) == before               # backup restored
+    assert "missing after boot" in st["detail"]
+    assert table_dump(db) == before                # backup restored
 
 
 def test_dry_mode_plans_without_touching(tmp_path):
