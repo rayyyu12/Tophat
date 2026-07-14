@@ -366,6 +366,28 @@ def verify_state(db_path: str | Path, desired: list[GroupSpec],
     return True, "groups and feeds verified"
 
 
+def wait_verified(db_path: str | Path, desired: list[GroupSpec], ops: Ops,
+                  timeout_s: float, poll_s: float = 5.0) -> tuple[bool, str]:
+    """Poll verify_state until it passes or timeout_s runs out.
+
+    Row damage (a group/leader/follower row missing or wrong) is decisive —
+    the app rejected the write at boot and more waiting cannot restore it, so
+    that fails immediately. Missing FEEDS are transient: the app recreates
+    them only after each firm entity finishes reconnecting, which can take
+    minutes after a cold relaunch (2026-07-13: a correct first live apply
+    rolled back because the old fixed 45 s boot wait expired first)."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        try:
+            ok, why = verify_state(db_path, desired, ops)
+            transient = not ok and why.startswith("feeds not rebuilt")
+        except Exception as exc:            # mid-boot read hiccup: keep trying
+            ok, why, transient = False, f"verify read failed ({exc})", True
+        if ok or not transient or time.monotonic() >= deadline:
+            return ok, why
+        time.sleep(poll_s)
+
+
 # ------------------------------------------------------------- backup
 
 def make_backup(db_path: Path, backups_dir: Path, plan_date: str) -> Path:
@@ -627,11 +649,15 @@ def run(desired_dict: dict, cfg: dict, app: AppController, *,
                            ops.summary(), backup_dir=str(backup))
         con.close()
 
-        # ---- relaunch + verify
-        if was_running or cfg.get("start_always"):
+        # ---- relaunch + verify (feeds return only after entities reconnect,
+        # so wait on the condition, not a fixed boot delay; with no relaunch
+        # nothing can rebuild feeds, so don't sit out the timeout for it)
+        relaunched = was_running or bool(cfg.get("start_always"))
+        if relaunched:
             app.start()
-            time.sleep(float(cfg.get("boot_wait_s", 45)))
-        ok, why = verify_state(db_path, desired, ops)
+        ok, why = wait_verified(
+            db_path, desired, ops,
+            float(cfg.get("verify_timeout_s", 300)) if relaunched else 0.0)
         if ok:
             return _status("applied", why, plan_date, started, ops.summary(),
                            {"groups_ok": True, "feeds_rebuilt": True},

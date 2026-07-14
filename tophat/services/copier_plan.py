@@ -34,7 +34,10 @@ APEX_NUKE_SLOTS = 1
 # too: at most this many riding the pack on any day (operator decision
 # 2026-07-09 — same 2-evals/day rule as the Topstep scheduler and the Apex
 # intake). Lockstep 1.0x twins (Lucid) need no gate: a twin only trades when
-# its own leader holds a Topstep eval slot, so it inherits that pacing.
+# its own leader holds a Topstep eval slot, so it inherits that pacing — which
+# is exactly why pairing targets the slot HOLDERS (the depth-first drivers),
+# never an alive-but-idle leader (operator report 2026-07-13: twins spread
+# least-loaded across the pack sat on idle evals and traded nothing).
 CLONE_INTAKE_PER_DAY = 2
 
 # Lucid twin throttle: stop buying twins while this many passed twins already
@@ -164,7 +167,7 @@ def _leader_name(leaders: dict[int, Leader], lid: int | None) -> str:
 
 
 def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
-               today: str) -> CopierPlan:
+               today: str, *, eval_slots: int = 2) -> CopierPlan:
     plan = CopierPlan(date=today)
     lmap = {l.account_id: l for l in leaders}
     plan.leader_names = {l.account_id: l.name for l in leaders}
@@ -178,6 +181,18 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
         m = mirrors[mid]
         if m.leader_id in eval_load and m.phase == "eval":
             eval_load[m.leader_id] += 1
+
+    # Tomorrow's DRIVERS: per login, the evals the depth-first scheduler will
+    # actually hand the day's `eval_slots` to (most advanced first, the
+    # scheduler's own ordering). A twin parked on any other live leader sits
+    # through a day of nothing — pairing must target these.
+    by_owner: dict[str, list[Leader]] = {}
+    for l in eval_leaders:
+        by_owner.setdefault(l.owner, []).append(l)
+    drivers: set[int] = set()
+    for lst in by_owner.values():
+        lst.sort(key=lambda l: (-l.days_traded, l.account_id))
+        drivers.update(l.account_id for l in lst[:max(0, int(eval_slots))])
 
     # fresh funded leaders available for waiting mirrors (one twin per firm each)
     fresh = sorted((l for l in leaders if l.fresh_funded), key=lambda l: l.account_id)
@@ -303,7 +318,13 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
             lid = m.leader_id
             leader = lmap.get(lid) if lid is not None else None
             unsafe_current = leader is not None and guard and leader.near_floor
-            if leader is None or not leader.live_eval or unsafe_current:
+            # A lockstep twin on an alive-but-idle leader (no eval slot under
+            # the depth-first scheduler) trades NOTHING all day — sticky
+            # pairing must not park it there while a driver is available.
+            idle_current = bool(leader is not None and leader.live_eval
+                                and not guard and drivers
+                                and leader.account_id not in drivers)
+            if leader is None or not leader.live_eval or unsafe_current or idle_current:
                 # (re)map to a live eval leader (safe leaders only)
                 avail = [l for l in eval_leaders if not (guard and l.near_floor)]
                 if avail:
@@ -316,8 +337,11 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                                                          eval_load[l.account_id],
                                                          l.account_id))
                     else:
-                        # lockstep twins spread across the pack (least loaded)
-                        pick = min(avail, key=lambda l: (eval_load[l.account_id],
+                        # lockstep twins ride the drivers (tomorrow's slot
+                        # holders), least loaded first so they spread across
+                        # all of them before doubling up
+                        pick = min(avail, key=lambda l: (l.account_id not in drivers,
+                                                         eval_load[l.account_id],
                                                          l.account_id))
                     eval_load[pick.account_id] += 1
                     plan.desired[mid] = Desired(pick.account_id, "", want_mult)
@@ -325,6 +349,9 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
                     if unsafe_current:
                         why = ("leader near its floor (would fire stopless) - "
                                "remap to a safe eval leader")
+                    elif idle_current:
+                        why = ("leader holds no eval slot (depth-first pipeline) "
+                               "- ride a scheduled leader")
                     elif lid is not None:
                         why = "its leader passed/stopped - ride the eval pack"
                     else:
@@ -604,9 +631,11 @@ def leaders_from_pool(pool) -> list[Leader]:
 
 def build_today_plan(pool, today: str) -> CopierPlan:
     """Assemble inputs and solve. Merges applied_at if today's plan was applied."""
+    from tophat.store.config import load_settings
     leaders = leaders_from_pool(pool)
     mirrors = load_mirrors()
-    plan = build_plan(leaders, mirrors, today)
+    plan = build_plan(leaders, mirrors, today,
+                      eval_slots=int(load_settings().max_evals_per_day))
     plan.hazards = mirror_sync.hazards(mirrors, today)
     # "no leader mapped" reads RECORDED state; when today's plan assigns one, the
     # mirror isn't stranded - the real action is applying the plan. Say that.

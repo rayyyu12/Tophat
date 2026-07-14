@@ -128,6 +128,51 @@ def test_lucid_evals_have_no_intake_gate():
     assert all(d.leader_id is not None for d in plan.desired.values())
 
 
+def test_lucid_twins_ride_the_scheduled_drivers():
+    # 6 evals, two advanced (they hold tomorrow's 2 depth-first slots): all 4
+    # twins must land on those two, split evenly - never on an idle leader
+    # (2026-07-13: least-loaded spread parked 3 of 4 twins on idle evals).
+    leaders = [L(1), L(2), L(3, days=1), L(4), L(5, days=1), L(6)]
+    for _ in range(4):
+        MS.create_mirror("lucid-50k")
+    plan = cp.build_plan(leaders, MS.load_mirrors(), TODAY)
+    got = sorted(d.leader_id for d in plan.desired.values())
+    assert got == [3, 3, 5, 5]
+
+
+def test_lucid_twin_moves_off_alive_but_idle_leader():
+    # Sticky pairing must not survive the leader losing its slot: a twin mapped
+    # to a live-but-idle eval is MOVEd onto a driver.
+    m = MS.create_mirror("lucid-50k", leader_id=1)     # leader 1: alive, idle
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1), L(2, days=3), L(3, days=2)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id == 2
+    mv = lines_for(plan, m.mirror_id, "MOVE")
+    assert mv and "no eval slot" in mv[0].reason
+
+
+def test_lucid_twin_keeps_its_driver():
+    # A twin already on a slot holder stays put (no churn), even when the other
+    # driver is less loaded.
+    m = MS.create_mirror("lucid-50k", leader_id=3)
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1), L(2, days=1), L(3, days=1)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id == 3
+    assert not lines_for(plan, m.mirror_id)
+
+
+def test_lucid_drivers_are_per_login():
+    # Slot caps are per API key: with 2 slots/login, each login's most-advanced
+    # evals drive - a twin can ride login B's slot holder too.
+    leaders = [L(1, days=5, owner="A"), L(2, owner="A"), L(3, owner="A"),
+               L(4, days=4, owner="B"), L(5, owner="B")]
+    for _ in range(4):
+        MS.create_mirror("lucid-50k")
+    plan = cp.build_plan(leaders, MS.load_mirrors(), TODAY, eval_slots=1)
+    got = sorted(d.leader_id for d in plan.desired.values())
+    assert got == [1, 1, 4, 4]                        # only the two slot holders
+
+
 def test_lucid_eval_never_downsizes():
     m = MS.create_mirror("lucid-50k", leader_id=1)
     ms = MS.load_mirrors()

@@ -11,8 +11,11 @@
 >   there (association pks are app-assigned accounts.id on AUTOINCREMENT
 >   columns; `replication_disable_reason` column exists; leader rows carry
 >   entity_id+account_name; live groups flags are (0,1,1,1) not all-1s).
->   The app log is encrypted → verify waits `boot_wait_s` instead of log
->   markers. **Operator sign-off of fixtures.md still pending.**
+>   The app log is encrypted → verify polls the DB until feeds reappear
+>   (`verify_timeout_s`, default 300 s; replaced the fixed `boot_wait_s` 45 s
+>   after it rolled back a correct apply on 2026-07-13 — entity reconnect,
+>   which rebuilds feeds, takes longer than 45 s) instead of log markers.
+>   **Operator sign-off of fixtures.md still pending.**
 > - **Stage 1 complete**: writer engine `rabbit/tc_apply.py` (+14 tests in
 >   `tests/test_tc_apply.py`: golden diffs, guards, idempotency, mid-txn
 >   crash, verify-fail rollback), exporter `tophat/services/tc_export.py`

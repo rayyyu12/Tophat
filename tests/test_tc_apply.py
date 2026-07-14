@@ -99,7 +99,8 @@ def make_db(tmp_path: Path, accounts=None, extra_entity_user: str | None = None,
 
 class FakeApp:
     """AppController stand-in. boot='rebuild' recreates feeds at start (what the
-    real app does); boot='eat_group' deletes the newest group (a rejected write)."""
+    real app does); boot='eat_group' deletes the newest group (a rejected write);
+    boot='noop' touches nothing (an entity that never finishes reconnecting)."""
 
     def __init__(self, db: Path, boot: str = "rebuild", running: bool = True):
         self.db, self.boot, self.running = db, boot, running
@@ -137,7 +138,7 @@ class FakeApp:
 
 def cfg_for(db: Path, tmp_path: Path) -> dict:
     return {"db_path": str(db), "guard_goose": GOOSE, "guard_user": UID,
-            "boot_wait_s": 0, "quit_timeout_s": 5,
+            "verify_timeout_s": 0, "quit_timeout_s": 5,
             "backups_dir": str(tmp_path / "backups")}
 
 
@@ -357,6 +358,38 @@ def test_verify_failure_rolls_back(tmp_path):
     assert "missing after boot" in st["detail"]
     assert table_dump(db) == before               # backup restored
     assert app.starts == 2                        # boot for verify + boot after restore
+
+
+def test_verify_polls_until_slow_feed_rebuild_lands(tmp_path, monkeypatch):
+    """Feeds reappear only after each entity finishes reconnecting - minutes
+    after a cold relaunch, not the old fixed 45 s (the 2026-07-13 first live
+    apply rolled back exactly this way). wait_verified must poll, not fail on
+    the first look."""
+    db = make_db(tmp_path)
+    app = FakeApp(db, boot="noop")                # start() rebuilds nothing yet
+    polls = {"n": 0}
+
+    def reconnect_finishes(_seconds):             # the wait between two polls
+        polls["n"] += 1
+        FakeApp(db).start()                       # boot="rebuild": feeds return
+
+    monkeypatch.setattr(tc_apply.time, "sleep", reconnect_finishes)
+    cfg = dict(cfg_for(db, tmp_path), verify_timeout_s=60)
+    st = tc_apply.run(desired([grp("PRAC-1", ("APEX-A", 1.0, True))]),
+                      cfg, app, force_window=True)
+    assert st["result"] == "applied", st["detail"]
+    assert polls["n"] >= 1                        # first look failed, poll saved it
+
+
+def test_verify_times_out_when_feeds_never_return(tmp_path):
+    db = make_db(tmp_path)
+    app = FakeApp(db, boot="noop")                # entities never reconnect
+    before = table_dump(db)
+    st = tc_apply.run(desired([grp("PRAC-1", ("APEX-A", 1.0, True))]),
+                      cfg_for(db, tmp_path), app, force_window=True)
+    assert st["result"] == "rolled_back"
+    assert "feeds not rebuilt" in st["detail"]
+    assert table_dump(db) == before               # backup restored
 
 
 def test_dry_mode_plans_without_touching(tmp_path):
