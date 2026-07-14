@@ -318,28 +318,30 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
             lid = m.leader_id
             leader = lmap.get(lid) if lid is not None else None
             unsafe_current = leader is not None and guard and leader.near_floor
-            # A lockstep twin on an alive-but-idle leader (no eval slot under
-            # the depth-first scheduler) trades NOTHING all day — sticky
-            # pairing must not park it there while a driver is available.
+            # A follower on an alive-but-idle leader (no eval slot under the
+            # depth-first scheduler) trades NOTHING all day — sticky pairing
+            # must not park it there while a (safe) driver is available.
+            safe_driver = any(l.account_id in drivers
+                              and not (guard and l.near_floor)
+                              for l in eval_leaders)
             idle_current = bool(leader is not None and leader.live_eval
-                                and not guard and drivers
-                                and leader.account_id not in drivers)
+                                and leader.account_id not in drivers
+                                and safe_driver)
             if leader is None or not leader.live_eval or unsafe_current or idle_current:
                 # (re)map to a live eval leader (safe leaders only)
                 avail = [l for l in eval_leaders if not (guard and l.near_floor)]
                 if avail:
+                    # Drivers first — a follower must sit on a leader the depth-
+                    # first scheduler will actually run. Within the drivers, a
+                    # non-lockstep rider stacks the most advanced (finish it
+                    # fastest); lockstep twins go least-loaded so they spread
+                    # across all drivers before doubling up.
                     if guard:
-                        # A non-lockstep rider must sit on a leader the depth-
-                        # first scheduler is actually DRIVING (most advanced =
-                        # today's slot holders) — parked on an idle fresh
-                        # leader, its intake slot would trade nothing.
-                        pick = min(avail, key=lambda l: (-l.days_traded,
+                        pick = min(avail, key=lambda l: (l.account_id not in drivers,
+                                                         -l.days_traded,
                                                          eval_load[l.account_id],
                                                          l.account_id))
                     else:
-                        # lockstep twins ride the drivers (tomorrow's slot
-                        # holders), least loaded first so they spread across
-                        # all of them before doubling up
                         pick = min(avail, key=lambda l: (l.account_id not in drivers,
                                                          eval_load[l.account_id],
                                                          l.account_id))
@@ -405,7 +407,7 @@ def build_plan(leaders: list[Leader], mirrors: dict[str, MirrorAccount],
         if b["firm"] == TOPSTEP.label:
             # New Topstep accounts ship with "Position Brackets" — the API
             # bracket rejection that cost three evals their day on 2026-07-09.
-            why += " — enable Auto OCO Brackets on each new account"
+            why += " - enable Auto OCO Brackets on each new account"
         plan.lines.append(PlanLine("BUY", "", f"{b['firm']}: buy {b['count']} eval(s)"
                                    f" (~${b['cost']:,.0f})", why))
 

@@ -227,6 +227,7 @@ def public_view(m: MirrorAccount) -> dict:
         "room": round(m.room(), 2),
         "payout_preview": round(preview_payout(m), 2) if m.phase == "funded" else 0.0,
         "win_days_required": firm.winning_days_required,
+        "eval_target": firm.eval_target,
     }
 
 

@@ -118,6 +118,27 @@ def test_tradeify_intake_rides_the_driven_leader():
     assert plan.desired[m.mirror_id].leader_id == 2
 
 
+def test_tradeify_rider_prefers_drivers_on_fresh_tie():
+    # All-fresh leaders tie on days_traded; the rider must still land on a
+    # DRIVER (per-login top eval_slots by the scheduler's ordering), not drift
+    # to an unloaded idle leader (preview repro 2026-07-13).
+    m = MS.create_mirror("tradeify-50k")
+    lucid = MS.create_mirror("lucid-50k")
+    ms = MS.load_mirrors()
+    ms[lucid.mirror_id].leader_id = 1                 # driver 1 already loaded
+    plan = cp.build_plan([L(1), L(2), L(3), L(4)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id in (1, 2)   # drivers = {1, 2}
+
+
+def test_tradeify_rider_moves_off_alive_but_idle_leader():
+    m = MS.create_mirror("tradeify-50k", leader_id=1)     # alive, but no slot
+    ms = MS.load_mirrors()
+    plan = cp.build_plan([L(1), L(2, days=4), L(3, days=2)], ms, TODAY)
+    assert plan.desired[m.mirror_id].leader_id == 2       # drivers = {2, 3}
+    mv = lines_for(plan, m.mirror_id, "MOVE")
+    assert mv and "no eval slot" in mv[0].reason
+
+
 def test_lucid_evals_have_no_intake_gate():
     # Lockstep twins inherit the leaders' own 2-slots/day pacing - all of them
     # stay mapped.
@@ -428,6 +449,78 @@ def test_apex_topup_fills_to_target_and_respects_pa_headroom():
 
 
 # ------------------------------------------------------- determinism / apply
+def test_fleet_scale_pairing_stays_lawful_and_deterministic(tmp_path):
+    """The operator's target steady state - 10 lucid + 10 tradeify + 20 apex
+    mirrors on 12 leaders across 2 logins - must solve deterministically with
+    every pairing rule intact, and the applied plan must export cleanly to the
+    Rabbit contract (unique followers, resolvable leaders)."""
+    sig = [L(101, signal_plan="apex-nuke", name="PRAC-1"),
+           L(102, signal_plan="apex-flip", name="APX-SIG"),
+           L(103, signal_plan="apex-eval", name="PRAC-2")]
+    # per login (A: 1-6, B: 7-12): two advanced evals hold the day's slots
+    days = {1: 3, 2: 1, 7: 3, 8: 1}
+    leaders = sig + [L(i, days=days.get(i, 0), owner=("A" if i <= 6 else "B"))
+                     for i in range(1, 13)]
+    for _ in range(10):
+        MS.create_mirror("lucid-50k")
+    for _ in range(10):
+        MS.create_mirror("tradeify-50k")
+    for _ in range(12):
+        MS.create_mirror("apex-50k", phase="funded")
+    for _ in range(8):
+        MS.create_mirror("apex-50k")
+
+    def load_with_channels():
+        ms = MS.load_mirrors()
+        for m in ms.values():
+            if m.firm == "apex-50k" and m.phase == "funded":
+                m.channel = "nuke"
+        return ms
+
+    ms = load_with_channels()
+    plan = cp.build_plan(leaders, ms, TODAY)
+    assert cp.plan_to_dict(plan) == cp.plan_to_dict(
+        cp.build_plan(leaders, load_with_channels(), TODAY))   # deterministic
+
+    drivers = {1, 2, 7, 8}    # per login, top max_evals_per_day by days_traded
+    by_firm: dict[str, list] = {}
+    for mid, d in plan.desired.items():
+        by_firm.setdefault(ms[mid].firm, []).append(d)
+    # lucid: every twin rides a driver, spread within one of even
+    lucid_leads = [d.leader_id for d in by_firm["lucid-50k"]]
+    assert all(l in drivers for l in lucid_leads)
+    counts = [lucid_leads.count(l) for l in drivers]
+    assert max(counts) - min(counts) <= 1
+    # tradeify: intake-gated to 2/day, riding driven leaders only
+    tr = [d.leader_id for d in by_firm["tradeify-50k"] if d.leader_id is not None]
+    assert len(tr) == cp.CLONE_INTAKE_PER_DAY and all(l in drivers for l in tr)
+    # apex: 2 eval-intake slots + 1 nuke slot, the rest parked unmapped
+    ax = by_firm["apex-50k"]
+    assert sum(1 for d in ax
+               if d.channel == "eval" and d.leader_id == 103) == cp.APEX_INTAKE_PER_DAY
+    assert sum(1 for d in ax if d.nuke_today) == cp.APEX_NUKE_SLOTS
+    # every mapped mirror rides a live, tradeable leader
+    lmap = {l.account_id: l for l in leaders}
+    for d in plan.desired.values():
+        if d.leader_id is not None:
+            assert lmap[d.leader_id].enabled and lmap[d.leader_id].can_trade
+
+    # applied plan -> mirrors store -> tc_export round-trip at fleet scale
+    ms2 = load_with_channels()
+    for i, mid in enumerate(sorted(ms2)):
+        ms2[mid].account_number = f"ACCT{i:03d}"
+    MS.save_mirrors(ms2)
+    plan2 = cp.build_plan(leaders, ms2, TODAY)
+    cp.apply_plan(plan2, applied_at="2026-07-06 22:00:00 ET", base=tmp_path)
+    from tophat.services import tc_export
+    names = {l.account_id: l.name for l in leaders}
+    payload = tc_export.desired_from_mirrors(MS.load_mirrors(), names, 0, TODAY)
+    followers = [f["account"] for g in payload["groups"] for f in g["followers"]]
+    assert len(followers) == 15               # 10 lucid + 2 tradeify + 2+1 apex
+    assert len(followers) == len(set(followers))
+    assert len(payload["groups"]) == 6        # 4 drivers + eval channel + nuke channel
+
+
 def test_same_state_same_plan():
     sig, ms = _apex_setup()
     p1 = cp.build_plan(sig, ms, TODAY)

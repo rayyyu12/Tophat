@@ -328,6 +328,44 @@ def test_parse_desired_rejects_bad_shapes():
         tc_apply.parse_desired(desired([{"leader": "L1", "followers": []}]))
 
 
+def test_fleet_scale_apply_and_reassign(tmp_path):
+    """Steady-state fleet shape: 12 leader groups, 30 followers, one txn. Then a
+    bulk reassignment (every follower moves to a different leader) applies as a
+    minimal diff with no leftover rows - the 'reassign a ton of evals at once'
+    case."""
+    accounts = ([(100 + i, "topstepx-x", f"TS-{i:02d}") for i in range(1, 13)]
+                + [(200 + i, "APEX-demo", f"FOL-{i:02d}") for i in range(1, 31)])
+    db = make_db(tmp_path, accounts=accounts)
+    app = FakeApp(db)
+    fol = iter(range(1, 31))
+    d1 = desired([grp(f"TS-{gi:02d}",
+                      *[(f"FOL-{next(fol):02d}", 1.0, True)
+                        for _ in range(3 if gi <= 6 else 2)])
+                  for gi in range(1, 13)])       # 6x3 + 6x2 = 30 followers
+    st = tc_apply.run(d1, cfg_for(db, tmp_path), app, force_window=True)
+    assert st["result"] == "applied", st["detail"]
+    assert st["changes"] == {"groups_created": 12, "groups_dropped": 0,
+                             "followers_upserted": 30, "followers_dropped": 0,
+                             "feeds_cleared": 42}
+    assert len(rows(db, "SELECT id FROM groups")) == 12
+    assert len(rows(db, "SELECT id FROM group_follower_accounts")) == 30
+    # re-run -> noop (group identity stable at scale)
+    assert tc_apply.run(d1, cfg_for(db, tmp_path), app,
+                        force_window=True)["result"] == "noop"
+    # rotate every follower onto the NEXT leader: 30 moves, groups reused
+    fol = iter(range(1, 31))
+    d2 = desired([grp(f"TS-{(gi % 12) + 1:02d}",
+                      *[(f"FOL-{next(fol):02d}", 1.0, True)
+                        for _ in range(3 if gi <= 6 else 2)])
+                  for gi in range(1, 13)])
+    st2 = tc_apply.run(d2, cfg_for(db, tmp_path), app, force_window=True)
+    assert st2["result"] == "applied", st2["detail"]
+    assert st2["changes"]["groups_created"] == 0
+    assert st2["changes"]["followers_upserted"] == 30
+    assert len(rows(db, "SELECT id FROM group_follower_accounts")) == 30
+    assert len(rows(db, "SELECT DISTINCT account_id FROM feeds")) == 42
+
+
 # ------------------------------------------------------------------ failure paths
 
 def test_sql_error_mid_txn_restores_backup(tmp_path, monkeypatch):

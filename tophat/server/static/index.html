@@ -371,7 +371,9 @@
   .rabbit-row:last-child{border-bottom:none}
   .rabbit-row .grow{flex:1;min-width:0}
   .rabbit-row .sub2{color:var(--faint);font-size:11.5px;margin-top:3px}
-  .rabbit-row .pill{flex:none}
+  /* fixed-width status column: rolled_back is the widest label, so pin every
+     pill to one width and the text after them starts at the same x for all rows */
+  .rabbit-row .pill{flex:none;width:112px;justify-content:center}
   tr.tc-lead td{background:linear-gradient(180deg,var(--surface-2),transparent);
     border-top:1px solid var(--border);font-size:12.5px;padding-top:10px;padding-bottom:10px}
   tr.tc-lead:first-child td{border-top:none}
@@ -537,11 +539,11 @@
         <div id="opsImports"></div>
       </div>
       <div class="panel" style="margin-bottom:18px">
-        <div class="head"><h2>Next sync — what Rabbit will change</h2><span class="muted" id="opsPlanCount"></span></div>
+        <div class="head"><h2>Next sync - what Rabbit will change</h2><span class="muted" id="opsPlanCount"></span></div>
         <div id="opsPlanLines"></div>
       </div>
       <div class="panel" style="margin-bottom:18px">
-        <div class="head"><h2>Tradecopia — live mapping</h2><span class="muted" id="opsTcMeta"></span></div>
+        <div class="head"><h2>Tradecopia - live mapping</h2><span class="muted" id="opsTcMeta"></span></div>
         <div id="opsTcState"></div>
       </div>
       <div class="ops-cards">
@@ -557,10 +559,6 @@
           <div class="head"><h2>Buy list</h2><span class="muted">top up Mondays</span></div>
           <div id="opsBuys"></div>
         </div>
-      </div>
-      <div class="panel">
-        <div class="head"><h2>Mirror ledger</h2><span class="muted" id="opsMirrorMeta"></span></div>
-        <div id="opsMirrors"></div>
       </div>
     </section>
 
@@ -596,6 +594,7 @@
         </div>
       </div>
       <div id="acctGroups"></div>
+      <div id="mirrorGroups"></div>
       <div class="panel hidden" id="resultsPanel" style="margin-top:18px">
         <div class="results" id="runResults"></div>
       </div>
@@ -821,7 +820,7 @@
       <!-- MIRROR (follower) ACCOUNTS -->
       <div class="panel" style="margin-top:20px">
         <div class="head"><h2>Mirror accounts</h2>
-          <span class="muted">balances inferred</span></div>
+          <span class="muted">P/L synced from Rabbit's balance reports · Edit for manual adjustments</span></div>
         <div class="body" style="padding:18px 22px">
           <div class="mirror-add">
             <div class="field" style="margin:0"><label for="m_firm">Firm</label>
@@ -839,7 +838,7 @@
         </div>
         <div class="tablewrap"><table id="mirrorTable" style="min-width:900px">
           <thead><tr><th>Mirror</th><th>Firm</th><th>Phase</th><th>Leader</th><th>Mult</th>
-            <th>Inferred P/L</th><th>Room</th><th>Win days</th><th>Verified</th><th>Actions</th></tr></thead>
+            <th>P/L</th><th>Room</th><th>Win days</th><th>Last synced</th><th>Actions</th></tr></thead>
           <tbody></tbody></table></div>
       </div>
     </section>
@@ -892,6 +891,7 @@
     <h3 id="modalTitle">Confirm</h3>
     <p id="modalBody"></p>
     <input id="modalInput" class="hidden" autocomplete="off" spellcheck="false">
+    <div id="modalForm" class="hidden" style="max-height:52vh;overflow-y:auto"></div>
     <div class="actions">
       <button class="btn" id="modalCancel">Cancel</button>
       <button class="btn primary" id="modalConfirm">Confirm</button>
@@ -969,6 +969,7 @@ function confirmModal({title='Confirm', body='', confirmText='Confirm', danger=f
   $('#modalTitle').textContent=title;
   $('#modalBody').textContent=body;
   $('#modalInput').classList.add('hidden');
+  $('#modalForm').classList.add('hidden');
   const btn=$('#modalConfirm');
   btn.textContent=confirmText;
   btn.className='btn '+(danger?'danger':'primary');
@@ -982,6 +983,7 @@ function promptModal({title='Enter a value', body='', confirmText='OK',
   const scrim=$('#modalScrim');
   $('#modalTitle').textContent=title;
   $('#modalBody').textContent=body;
+  $('#modalForm').classList.add('hidden');
   const inp=$('#modalInput');
   inp.classList.remove('hidden');
   inp.value=value; inp.placeholder=placeholder;
@@ -991,6 +993,46 @@ function promptModal({title='Enter a value', body='', confirmText='OK',
   scrim.classList.add('show');
   setTimeout(()=>{inp.focus(); inp.select();},0);
   return new Promise(res=>{ _modalResolve=ok=>res(ok?inp.value:null); });
+}
+// themed multi-field dialog -> resolves to {key: value} or null on cancel.
+// Field spec: {key, label, value, type: number(default)|select|check, options, step}
+function formModal({title='Edit', body='', confirmText='Save', fields=[]}={}){
+  const scrim=$('#modalScrim');
+  $('#modalTitle').textContent=title;
+  $('#modalBody').textContent=body;
+  $('#modalInput').classList.add('hidden');
+  const host=$('#modalForm');
+  host.classList.remove('hidden');
+  host.innerHTML=fields.map(f=>{
+    if(f.type==='select')
+      return `<div class="field"><label>${esc(f.label)}</label>
+        <select class="acct-pick" data-fk="${esc(f.key)}">${(f.options||[]).map(o=>
+          `<option value="${esc(o)}"${o===f.value?' selected':''}>${esc(o)}</option>`).join('')}
+        </select></div>`;
+    if(f.type==='check')
+      return `<div class="check-row"><input type="checkbox" id="mf_${esc(f.key)}"
+        data-fk="${esc(f.key)}"${f.value?' checked':''}>
+        <label for="mf_${esc(f.key)}">${esc(f.label)}</label></div>`;
+    return `<div class="field"><label>${esc(f.label)}</label>
+      <input type="number" step="${esc(f.step||'1')}" data-fk="${esc(f.key)}"
+        value="${esc(f.value==null?'':f.value)}"></div>`;
+  }).join('');
+  const btn=$('#modalConfirm');
+  btn.textContent=confirmText;
+  btn.className='btn primary';
+  scrim.classList.add('show');
+  return new Promise(res=>{ _modalResolve=ok=>{
+    let out=null;
+    if(ok){
+      out={};
+      host.querySelectorAll('[data-fk]').forEach(el=>{
+        out[el.dataset.fk]=(el.type==='checkbox')?el.checked:el.value;
+      });
+    }
+    host.classList.add('hidden');
+    host.innerHTML='';
+    res(out);
+  };});
 }
 function closeModal(val){
   $('#modalScrim').classList.remove('show');
@@ -1029,6 +1071,7 @@ document.querySelectorAll('.nav[data-page]').forEach(n=>n.onclick=()=>{
   if(p==='ops') loadOps();
   if(p==='analytics') loadAnalytics();
   if(p==='sim') loadSim();
+  if(p==='dashboard') loadMirrors();
 });
 $('#btnLogout').onclick = async () => {
   await fetch('/api/logout',{method:'POST'});
@@ -1931,54 +1974,6 @@ function renderOps(plan, boxesData, obs){
     }
   }
 
-  // mirror mapping tables, grouped by firm
-  const mh=$('#opsMirrors'); mh.innerHTML='';
-  $('#opsMirrorMeta').textContent=OPS_MIRRORS.length?`${OPS_MIRRORS.length} total`:'';
-  if(!OPS_MIRRORS.length){
-    mh.innerHTML=`<div style="padding:22px" class="muted">No mirror accounts yet -
-      add them on the <b>Accounts</b> page.</div>`;
-    return;
-  }
-  const byFirm={};
-  const names=plan.leader_names||{};
-  const nameOf=id=>id==null?null:(names[id]?esc(names[id]):`#${id}`);
-  for(const m of OPS_MIRRORS) (byFirm[m.firm]=byFirm[m.firm]||[]).push(m);
-  for(const firm of Object.keys(byFirm).sort()){
-    const rows=byFirm[firm].map(m=>{
-      const desired=(plan.desired||{})[m.mirror_id];
-      const dLid=desired?desired.leader_id:m.leader_id;
-      // Show the DESIRED leader by name; flag it "pending" until the plan is
-      // applied and the mapping is recorded on the mirror.
-      const pending=desired&&desired.leader_id!==m.leader_id;
-      const lead=(nameOf(dLid)||'-')
-        +(pending?' <span class="muted" title="apply the copier plan to record this">(pending)</span>':'');
-      const chTag=m.firm==='apex-50k'&&(desired?desired.channel:m.channel)
-        ?` <span class="muted">(${desired?desired.channel:m.channel})</span>`:'';
-      const ver=m.last_verified||'never';
-      const stale=!m.last_verified;
-      return `<tr class="${['blown','retired'].includes(m.phase)?'dim':''}">
-        <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
-          <div class="muted mono">${esc(m.account_number||m.mirror_id)}</div></td>
-        <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
-        <td class="mono">${lead}${chTag}</td>
-        <td class="mono">${Number(m.multiplier).toFixed(2).replace(/\.?0+$/,'')}×</td>
-        <td class="mono">${fmtUsd(m.equity)}</td>
-        <td class="mono">${fmtUsd(m.room)}</td>
-        <td class="mono">${m.win_days}/${m.win_days_required}</td>
-        <td class="${stale?'':'muted'}" style="${stale?'color:var(--warn)':''}">${esc(ver)}</td>
-      </tr>`;
-    }).join('');
-    const p=document.createElement('div');
-    p.style.marginBottom='0';
-    p.innerHTML=`<div class="head" style="border-top:1px solid var(--border)">
-        <h2 style="font-size:13px">${esc(FIRM_SHORT[firm]||firm)}</h2>
-        <span class="muted">${byFirm[firm].length}</span></div>
-      <div class="tablewrap"><table style="min-width:760px"><thead><tr>
-        <th>Mirror</th><th>Phase</th><th>Leader</th><th>Mult</th><th>Inferred P/L</th>
-        <th>Room</th><th>Win days</th><th>Verified</th></tr></thead>
-        <tbody>${rows}</tbody></table></div>`;
-    mh.appendChild(p);
-  }
 }
 
 // Rabbit panel: is the box alive, when does it fire, how did the last sync go
@@ -2101,7 +2096,7 @@ async function importObservedAccounts(names){
       return;
     }
     const n=(out.created||[]).length;
-    if(n) toast(`Imported ${n} account${n===1?'':'s'} — review the copier plan`);
+    if(n) toast(`Imported ${n} account${n===1?'':'s'} - review the copier plan`);
     else toast((out.skipped&&out.skipped[0]&&out.skipped[0].reason)||'No accounts imported');
   }catch(e){
     toast('Could not import accounts');
@@ -2175,11 +2170,11 @@ function renderTcState(obs, plan){
       rows+=`<tr class="${m&&['blown','retired'].includes(m.phase)?'dim':''}">
         <td><div class="name">${esc(m?(m.alias||f.account):f.account)}</div>
           <div class="muted mono">${esc(f.account)}</div></td>
-        <td>${m?`<span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span>`:'<span class="muted">—</span>'}</td>
+        <td>${m?`<span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span>`:'<span class="muted">-</span>'}</td>
         <td class="mono">${fmtMult(f.scale)}×</td>
         <td class="mono">${f.replicate?'on':'<span style="color:var(--warn)">off</span>'}</td>
-        <td>${a?(a.connected?'<span class="pill active">yes</span>':'<span class="pill inactive">no</span>'):'<span class="muted">—</span>'}</td>
-        <td class="mono">${a?`$${Number(a.balance).toLocaleString(undefined,{maximumFractionDigits:0})}`:'—'}</td>
+        <td>${a?(a.connected?'<span class="pill active">yes</span>':'<span class="pill inactive">no</span>'):'<span class="muted">-</span>'}</td>
+        <td class="mono">${a?`$${Number(a.balance).toLocaleString(undefined,{maximumFractionDigits:0})}`:'-'}</td>
         <td class="muted mono">${esc(a?String(a.updated_at||'').slice(0,16):'')}</td>
         <td>${badge}</td></tr>`;
     }
@@ -2236,13 +2231,84 @@ async function mirrorPaid(mid){
   loadOps(); if(CUR_PAGE==='accounts') loadMirrors();
 }
 
-// ---- mirror accounts (Accounts page) ----
+// ---- mirror (follower) accounts: shared list, Trading page cards, editor ----
 let MIRROR_LIST=[];
 async function loadMirrors(){
   try{ MIRROR_LIST=(await (await jfetch('/api/mirrors')).json()).mirrors||[]; }
   catch(e){ return; }
   renderMirrorTable();
+  renderMirrorGroups();
 }
+
+// One-line human status - same vocabulary as the leader tables' Lifecycle column.
+function mirrorLifecycle(m){
+  if(m.phase==='eval'){
+    if(!m.days_traded) return 'fresh eval - day 1 next';
+    const toGo=Math.max(0,(m.eval_target||3000)-m.equity);
+    return `eval day ${m.days_traded+1} next · ${fmtUsd(toGo)} to pass`;
+  }
+  if(m.phase==='funded'){
+    if(m.payout_ready) return `payout ready - request ${fmtUsd(m.payout_preview)}`;
+    const ch=m.firm==='apex-50k'&&m.channel?`${m.channel} channel · `:'';
+    return `${ch}win days ${m.win_days}/${m.win_days_required}`;
+  }
+  if(m.phase==='waiting') return 'waiting for a fresh funded leader';
+  if(m.phase==='passed') return 'passed - activate the funded account';
+  if(m.phase==='blown') return 'blown - trailing floor hit';
+  if(m.phase==='retired') return 'retired - payouts harvested';
+  return m.phase;
+}
+const mirrorWinDays=m=>m.phase==='funded'?`${m.win_days}/${m.win_days_required}`:'-';
+const mirrorLeader=m=>m.leader_name?esc(m.leader_name)
+  :(m.leader_id!=null?'#'+m.leader_id:'-');
+
+// Trading page: one panel per follower firm, next to the Topstep tables, so the
+// whole fleet lives on one page. P/L is synced from Rabbit's nightly balance
+// report (and manual syncs) - "Last synced" says how fresh it is.
+function renderMirrorGroups(){
+  const host=$('#mirrorGroups');
+  if(!host) return;
+  host.innerHTML='';
+  if(!MIRROR_LIST.length) return;
+  const byFirm={};
+  for(const m of MIRROR_LIST) (byFirm[m.firm]=byFirm[m.firm]||[]).push(m);
+  for(const firm of Object.keys(byFirm).sort()){
+    const list=byFirm[firm];
+    const live=list.filter(m=>!['blown','retired'].includes(m.phase));
+    const nEval=live.filter(m=>m.phase==='eval').length;
+    const nFunded=live.filter(m=>m.phase==='funded').length;
+    const meta=[`${live.length} active`, nEval?`${nEval} eval`:'',
+      nFunded?`${nFunded} funded`:'', 'P/L synced via Rabbit']
+      .filter(Boolean).join(' · ');
+    const rows=list.map(m=>{
+      const term=['blown','retired'].includes(m.phase);
+      return `<tr class="${term?'dim':''}">
+        <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
+          <div class="muted mono">${esc(m.account_number||m.mirror_id)}</div></td>
+        <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
+        <td class="muted">${esc(mirrorLifecycle(m))}</td>
+        <td class="mono">${mirrorLeader(m)}</td>
+        <td class="mono">${fmtMult(m.multiplier)}×</td>
+        <td class="mono">${fmtUsd(m.equity)}</td>
+        <td class="mono">${fmtUsd(m.room)}</td>
+        <td class="mono">${mirrorWinDays(m)}</td>
+        <td class="${m.last_verified?'muted':''}"
+          style="${m.last_verified?'':'color:var(--warn)'}">${esc(m.last_verified||'never')}</td>
+      </tr>`;
+    }).join('');
+    const panel=document.createElement('div');
+    panel.className='panel';
+    panel.style.marginBottom='18px';
+    panel.innerHTML=`<div class="head"><h2>${esc(FIRM_SHORT[firm]||firm)}</h2>
+        <span class="muted">${meta}</span></div>
+      <div class="tablewrap"><table style="min-width:900px"><thead><tr>
+        <th>Account</th><th>Phase</th><th>Status</th><th>Leader</th><th>Mult</th>
+        <th>P/L</th><th>Room</th><th>Win days</th><th>Last synced</th></tr></thead>
+        <tbody>${rows}</tbody></table></div>`;
+    host.appendChild(panel);
+  }
+}
+
 function renderMirrorTable(){
   const body=document.querySelector('#mirrorTable tbody');
   body.innerHTML='';
@@ -2264,6 +2330,8 @@ function renderMirrorTable(){
     if(m.payout_ready)
       acts.push(`<button class="btn sm"
         onclick="mirrorPaid('${esc(m.mirror_id)}')">Mark Paid</button>`);
+    acts.push(`<button class="btn sm" title="Manually adjust phase, day counters and balance"
+      onclick="mirrorEdit('${esc(m.mirror_id)}')">Edit</button>`);
     acts.push(`<button class="iconbtn" title="Sync balance from the firm dashboard"
       onclick="mirrorSync('${esc(m.mirror_id)}')">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg></button>`);
@@ -2274,15 +2342,63 @@ function renderMirrorTable(){
         <div class="muted mono">${esc(m.account_number||'-')}</div></td>
       <td>${esc(FIRM_SHORT[m.firm]||m.firm)}</td>
       <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
-      <td class="mono">${m.leader_name?esc(m.leader_name):(m.leader_id!=null?'#'+m.leader_id:'-')}</td>
-      <td class="mono">${Number(m.multiplier).toFixed(2).replace(/\.?0+$/,'')}×</td>
+      <td class="mono">${mirrorLeader(m)}</td>
+      <td class="mono">${fmtMult(m.multiplier)}×</td>
       <td class="mono">${fmtUsd(m.equity)}</td>
       <td class="mono">${fmtUsd(m.room)}</td>
-      <td class="mono">${m.win_days}/${m.win_days_required}</td>
+      <td class="mono">${mirrorWinDays(m)}</td>
       <td class="muted">${esc(m.last_verified||'never')}</td>
       <td><span class="cell-actions">${acts.join('')}</span></td>`;
     body.appendChild(tr);
   }
+}
+
+// Manual lifecycle editor - the mirror twin of the leader Lifecycle panel.
+// Everything here writes through /api/mirrors/{id}/update (patch_mirror), the
+// same path Rabbit's observed-balance booking uses, so the nightly plan solves
+// from whatever is saved.
+async function mirrorEdit(mid){
+  const m=MIRROR_LIST.find(x=>x.mirror_id===mid);
+  if(!m) return;
+  const out=await formModal({
+    title:`Edit ${m.alias||m.mirror_id}`,
+    body:'Set the mirror to what the firm dashboard shows. The copier plan and '
+      +'Rabbit pick the change up from here.',
+    confirmText:'Save',
+    fields:[
+      {key:'phase',label:'Phase',type:'select',value:m.phase,
+        options:['eval','funded','waiting','passed','blown','retired']},
+      {key:'days_traded',label:'Days traded (this phase)',value:m.days_traded},
+      {key:'win_days',label:'Winning days (this payout window)',value:m.win_days},
+      {key:'payouts_taken',label:'Payouts taken',value:m.payouts_taken},
+      {key:'equity',label:'P/L vs phase start ($)',step:'0.01',value:m.equity},
+      {key:'peak',label:'Peak P/L, EOD (trailing-floor anchor, $)',step:'0.01',value:m.peak},
+      {key:'multiplier',label:'Copier multiplier',step:'0.05',value:m.multiplier},
+      {key:'payout_ready',label:'Payout ready',type:'check',value:m.payout_ready},
+      {key:'enabled',label:'Enabled in TopHat',type:'check',value:m.enabled!==false},
+      {key:'record_payouts',type:'check',value:false,
+        label:'Record payout raises as real payouts (books in Analytics) - untick when adopting existing history'},
+    ]});
+  if(!out) return;
+  const body={
+    phase:out.phase,
+    days_traded:parseInt(out.days_traded,10)||0,
+    win_days:parseInt(out.win_days,10)||0,
+    payouts_taken:parseInt(out.payouts_taken,10)||0,
+    payout_ready:!!out.payout_ready,
+    enabled:!!out.enabled,
+    record_payouts:!!out.record_payouts,
+  };
+  const eq=parseFloat(out.equity), pk=parseFloat(out.peak), mult=parseFloat(out.multiplier);
+  if(!isNaN(pk)) body.peak=pk;
+  if(!isNaN(mult)) body.multiplier=mult;
+  // equity goes through sync_balance so the edit stamps last_verified - a manual
+  // adjustment IS a verification against the firm dashboard
+  if(!isNaN(eq)&&Math.abs(eq-m.equity)>1e-9) body.sync_balance=eq;
+  const r=await jfetch(`/api/mirrors/${encodeURIComponent(mid)}/update`,{method:'POST',
+    headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); toast(e.error||'Could not save'); return; }
+  toast('Mirror updated'); loadMirrors(); if(CUR_PAGE==='ops') loadOps();
 }
 $('#btnAddMirror').onclick=async()=>{
   const firm=$('#m_firm').value;
@@ -2847,10 +2963,13 @@ function connectWS(){
     ws.onclose=()=>{$('#connDot').style.color='var(--short)'; setTimeout(connectWS,4000);};
   }catch(e){setInterval(refresh,5000);}
 }
-refresh(); connectWS(); setInterval(pollAuto, 15000);
+refresh(); connectWS(); setInterval(pollAuto, 15000); loadMirrors();
 // keep Operations live while it's the visible page (plan, Rabbit heartbeat and
 // the observed Tradecopia state all move); cheap - four small API reads
 setInterval(()=>{ if(CUR_PAGE==='ops') loadOps(); }, 20000);
+// mirror balances move on Rabbit's observe posts and manual edits - refresh the
+// Trading page firm cards while visible (one small file-backed API read)
+setInterval(()=>{ if(CUR_PAGE==='dashboard') loadMirrors(); }, 30000);
 // Analytics refreshes on the same cadence while visible (one cheap file read)
 setInterval(()=>{ if(CUR_PAGE==='analytics') loadAnalytics(); }, 20000);
 </script>
