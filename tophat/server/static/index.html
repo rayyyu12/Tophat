@@ -312,10 +312,25 @@
     letter-spacing:-.01em}
   .modal p{margin:0 0 22px;color:var(--muted);font-size:13.5px;line-height:1.6;
     white-space:pre-line}
-  .modal input{width:100%;padding:10px 13px;border-radius:10px;
+  /* the single prompt() input only - a DIRECT child of .modal. Fields inside
+     #modalForm style themselves (.field / .check-row); matching them here used
+     to squash the form checkboxes into 28x22 blobs (padding+border-box) and
+     pull inputs into their labels (the -8px margin). */
+  .modal > input{width:100%;padding:10px 13px;border-radius:10px;
     border:1px solid var(--border-strong);background:rgba(12,10,9,.6);color:var(--text);
     font-family:var(--mono);font-size:13px;margin:-8px 0 22px;transition:.18s var(--ease)}
-  .modal input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+  .modal > input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px var(--accent-dim)}
+  /* multi-field editor body: scrolls when tall. Right padding keeps the
+     scrollbar clear of the inputs; the small top/left padding keeps focus
+     rings from clipping against the scroll container's edge. */
+  .modal-form{max-height:52vh;overflow-y:auto;overscroll-behavior:contain;
+    padding:4px 14px 4px 4px;margin-bottom:18px;
+    scrollbar-width:thin;scrollbar-color:var(--surface-3) transparent}
+  .modal-form::-webkit-scrollbar{width:9px}
+  .modal-form::-webkit-scrollbar-track{background:transparent}
+  .modal-form::-webkit-scrollbar-thumb{background:var(--surface-3);border-radius:99px}
+  .modal-form::-webkit-scrollbar-thumb:hover{background:var(--border-strong)}
+  .modal-form > :last-child{margin-bottom:0}
   .modal .actions{display:flex;justify-content:flex-end;gap:10px}
   .btn.danger{background:linear-gradient(140deg,var(--short),#e8506a);color:#1c0709;
     border-color:transparent;box-shadow:0 10px 28px -12px rgba(251,113,133,.6)}
@@ -545,6 +560,10 @@
       <div class="panel" style="margin-bottom:18px">
         <div class="head"><h2>Tradecopia - live mapping</h2><span class="muted" id="opsTcMeta"></span></div>
         <div id="opsTcState"></div>
+      </div>
+      <div class="panel" style="margin-bottom:18px">
+        <div class="head"><h2>Mirror ledger</h2><span class="muted" id="opsMirrorMeta"></span></div>
+        <div id="opsMirrors"></div>
       </div>
       <div class="ops-cards">
         <div class="panel">
@@ -891,7 +910,7 @@
     <h3 id="modalTitle">Confirm</h3>
     <p id="modalBody"></p>
     <input id="modalInput" class="hidden" autocomplete="off" spellcheck="false">
-    <div id="modalForm" class="hidden" style="max-height:52vh;overflow-y:auto"></div>
+    <div id="modalForm" class="modal-form hidden"></div>
     <div class="actions">
       <button class="btn" id="modalCancel">Cancel</button>
       <button class="btn primary" id="modalConfirm">Confirm</button>
@@ -1332,6 +1351,9 @@ function render(s){
     _lastGroupsSig = '';
     return;
   }
+  // Mirror firm panels read leader plans out of this snapshot - keep them in
+  // step with every push (their own signature makes no-op rebuilds free).
+  renderMirrorGroups();
   // Rebuild the tables only when their content actually changed - an identical
   // 3s WS push would otherwise wipe hover states and swallow in-flight clicks.
   const sig = JSON.stringify([groups, showHidden, [...pendingToggle]]);
@@ -1343,6 +1365,7 @@ function render(s){
 function toggleHidden(){
   showHidden=!showHidden;
   if(LAST_SNAP) render(LAST_SNAP); else refresh();
+  renderMirrorGroups();   // the mirror panels share the same show/hide control
 }
 
 const toggleRunning = new Set();   // accounts with an in-flight sync loop
@@ -1974,6 +1997,56 @@ function renderOps(plan, boxesData, obs){
     }
   }
 
+  // mirror ledger, grouped by firm: the per-mirror copier detail (desired
+  // leader, multiplier, inferred P/L, room, win days, last sync) that the
+  // Trading page's uniform fleet cards deliberately don't carry.
+  const mh=$('#opsMirrors'); mh.innerHTML='';
+  $('#opsMirrorMeta').textContent=OPS_MIRRORS.length?`${OPS_MIRRORS.length} total`:'';
+  if(!OPS_MIRRORS.length){
+    mh.innerHTML=`<div style="padding:22px" class="muted">No mirror accounts yet -
+      add them on the <b>Accounts</b> page.</div>`;
+  } else {
+    const byFirm={};
+    const names=plan.leader_names||{};
+    const nameOf=id=>id==null?null:(names[id]?esc(names[id]):`#${id}`);
+    for(const m of OPS_MIRRORS) (byFirm[m.firm]=byFirm[m.firm]||[]).push(m);
+    for(const firm of Object.keys(byFirm).sort()){
+      const rows=byFirm[firm].map(m=>{
+        const desired=(plan.desired||{})[m.mirror_id];
+        const dLid=desired?desired.leader_id:m.leader_id;
+        // Show the DESIRED leader by name; flag it "pending" until the plan is
+        // applied and the mapping is recorded on the mirror.
+        const pending=desired&&desired.leader_id!==m.leader_id;
+        const lead=(nameOf(dLid)||'-')
+          +(pending?' <span class="muted" title="apply the copier plan to record this">(pending)</span>':'');
+        const chTag=m.firm==='apex-50k'&&(desired?desired.channel:m.channel)
+          ?` <span class="muted">(${desired?desired.channel:m.channel})</span>`:'';
+        const ver=m.last_verified||'never';
+        const stale=!m.last_verified;
+        return `<tr class="${['blown','retired'].includes(m.phase)?'dim':''}">
+          <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
+            <div class="muted mono">${esc(m.account_number||m.mirror_id)}</div></td>
+          <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
+          <td class="mono">${lead}${chTag}</td>
+          <td class="mono">${fmtMult(m.multiplier)}×</td>
+          <td class="mono">${fmtUsd(m.equity)}</td>
+          <td class="mono">${fmtUsd(m.room)}</td>
+          <td class="mono">${m.win_days}/${m.win_days_required}</td>
+          <td class="${stale?'':'muted'}" style="${stale?'color:var(--warn)':''}">${esc(ver)}</td>
+        </tr>`;
+      }).join('');
+      const p=document.createElement('div');
+      p.style.marginBottom='0';
+      p.innerHTML=`<div class="head" style="border-top:1px solid var(--border)">
+          <h2 style="font-size:13px">${esc(FIRM_SHORT[firm]||firm)}</h2>
+          <span class="muted">${byFirm[firm].length}</span></div>
+        <div class="tablewrap"><table style="min-width:760px"><thead><tr>
+          <th>Mirror</th><th>Phase</th><th>Leader</th><th>Mult</th><th>Inferred P/L</th>
+          <th>Room</th><th>Win days</th><th>Last synced</th></tr></thead>
+          <tbody>${rows}</tbody></table></div>`;
+      mh.appendChild(p);
+    }
+  }
 }
 
 // Rabbit panel: is the box alive, when does it fire, how did the last sync go
@@ -2236,6 +2309,12 @@ let MIRROR_LIST=[];
 async function loadMirrors(){
   try{ MIRROR_LIST=(await (await jfetch('/api/mirrors')).json()).mirrors||[]; }
   catch(e){ return; }
+  // a fetch that reflects a pending enable/disable CONFIRMS it (same contract
+  // as the leader tables' pendingToggle)
+  for(const m of MIRROR_LIST)
+    if(mirrorPending.has(m.mirror_id)
+       && (m.enabled!==false)===mirrorPending.get(m.mirror_id))
+      mirrorPending.delete(m.mirror_id);
   renderMirrorTable();
   renderMirrorGroups();
 }
@@ -2262,51 +2341,207 @@ const mirrorWinDays=m=>m.phase==='funded'?`${m.win_days}/${m.win_days_required}`
 const mirrorLeader=m=>m.leader_name?esc(m.leader_name)
   :(m.leader_id!=null?'#'+m.leader_id:'-');
 
-// Trading page: one panel per follower firm, next to the Topstep tables, so the
-// whole fleet lives on one page. P/L is synced from Rabbit's nightly balance
-// report (and manual syncs) - "Last synced" says how fresh it is.
+// Trading page: one panel per follower firm with EXACTLY the leader tables'
+// columns (same colgroup, same header), so Topstep, Apex, Lucid and Tradeify
+// read as one aligned grid. Balance is inferred (anchor + booked P/L), the
+// plan cell shows the leader's plan scaled to this mirror's multiplier, and
+// the Enabled switch drives the copier: Rabbit maps/unmaps at its next sync.
+// Leader, multiplier, room and win days live on the Operations mirror ledger.
+const mirrorPending=new Map();   // mirror_id -> desired enabled (optimistic)
+const mirrorTerminal=m=>['blown','retired'].includes(m.phase);
+const mirrorEnabled=m=>mirrorPending.has(m.mirror_id)
+  ?mirrorPending.get(m.mirror_id):m.enabled!==false;
+function mirrorProgram(m){
+  if(m.phase==='eval'||m.phase==='passed') return 'eval';
+  if(m.phase==='funded'||m.phase==='waiting') return 'funded';
+  return m.phase;                                   // blown / retired
+}
+function mirrorStatus(m){
+  return ['passed','blown','retired'].includes(m.phase)?m.phase:'active';
+}
+// Absolute balance only when the start-balance anchor is known - never invent it
+const mirrorBalance=m=>m.start_balance==null?null:m.start_balance+m.equity;
+function mirrorPlanCell(m){
+  if(mirrorTerminal(m)) return '<div class="plan-wrap"><span class="muted">-</span></div>';
+  if(!mirrorEnabled(m))
+    return '<div class="plan-wrap"><span class="pill disabled">DISABLED</span></div>';
+  // passed = eval done, funded not activated yet - the copier unmaps it, so
+  // the old eval leader's plan is NOT this account's plan anymore
+  if(m.phase==='passed')
+    return `<div class="plan-wrap"><span class="pill idle">IDLE</span>
+      <div class="plan-note">activate the funded account</div></div>`;
+  const lead=((LAST_SNAP&&LAST_SNAP.accounts)||[]).find(a=>a.account_id===m.leader_id);
+  if(!lead||lead.terminal){
+    const why=m.phase==='waiting'?'waiting for a fresh leader'
+      :m.leader_id==null?'no leader mapped':(lead?'leader closed':'leader not visible');
+    return `<div class="plan-wrap"><span class="pill idle">IDLE</span>
+      <div class="plan-note">${esc(why)}</div></div>`;
+  }
+  let view=optimisticView(lead);
+  if(view.plan_contracts) view={...view,
+    plan_contracts:Math.max(1,Math.round(Number(view.plan_contracts)*(m.multiplier||1)))};
+  return `<div class="plan-wrap">${planPill(view)}
+    <div class="plan-note">leader's plan ×${fmtMult(m.multiplier)}</div></div>`;
+}
+// Same header as THEAD; the master switch flips the whole firm's copier state.
+const MIRROR_THEAD=`<thead><tr>
+  <th>Account</th><th>Status</th><th>Phase</th><th>Lifecycle</th><th>Balance</th>
+  <th>Today's plan</th><th>Position</th>
+  <th><span class="th-enabled">Enabled
+    <label class="sw" title="Copier on/off for every account in this table - applies at Rabbit's next sync">
+      <input type="checkbox" class="js-mirror-allsw"><span class="track"></span><span class="thumb"></span>
+    </label></span></th>
+</tr></thead>`;
+
+function buildMirrorRow(m){
+  const tr=document.createElement('tr');
+  tr.dataset.mid=m.mirror_id;
+  const enabled=mirrorEnabled(m);
+  const term=mirrorTerminal(m);
+  tr.classList.toggle('dim', term||!enabled);
+  if(m.phase==='passed') tr.classList.add('row-passed');
+  if(m.phase==='blown') tr.classList.add('row-blown');
+  const program=mirrorProgram(m);
+  const phaseCls={funded:'flip',eval:'eval'}[program]||'retire';
+  const status=mirrorStatus(m);
+  const statusCls=status==='retired'?'retire':status;
+  const bal=mirrorBalance(m);
+  tr.innerHTML=`
+    <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
+      <div class="muted mono">${esc(m.account_number||m.mirror_id)}</div></td>
+    <td><span class="pill ${statusCls}">${STATUS_LABELS[status]||esc(status)}</span></td>
+    <td><span class="pill ${phaseCls}">${esc(program)}</span></td>
+    <td class="muted">${esc(mirrorLifecycle(m))}</td>
+    <td class="mono" title="${bal==null
+      ?'unknown - sync the balance or let Rabbit anchor it'
+      :'inferred: phase-start anchor + booked P/L'}">${bal==null
+      ?'<span class="muted">-</span>':fmtUsd(bal)}</td>
+    <td class="plan-cell">${mirrorPlanCell(m)}</td>
+    <td class="mono muted">-</td>
+    <td><span class="cell-actions"><label class="sw"
+      title="Copier on/off - Rabbit maps or unmaps this account at its next sync">
+      <input type="checkbox" ${enabled?'checked':''}${term?' disabled':''}
+      onchange="toggleMirror('${esc(m.mirror_id)}', this)"><span class="track"></span><span class="thumb"></span></label></span></td>`;
+  return tr;
+}
+
+function buildMirrorPanel(firm, list){
+  const panel=document.createElement('div');
+  panel.className='panel';
+  panel.style.marginBottom='18px';
+  const live=list.filter(m=>!mirrorTerminal(m));
+  const nEval=live.filter(m=>['eval','passed'].includes(m.phase)).length;
+  const nFunded=live.filter(m=>['funded','waiting'].includes(m.phase)).length;
+  const meta=[`${live.length} account${live.length===1?'':'s'}`,
+    nEval?`${nEval} eval`:'', nFunded?`${nFunded} funded`:'',
+    'balances via Rabbit'].filter(Boolean).join(' · ');
+  panel.innerHTML=`<div class="head"><h2>${esc(FIRM_SHORT[firm]||firm)}</h2>
+      <span class="muted">${meta}</span></div>
+    <div class="tablewrap"><table class="acct">${COLGROUP}${MIRROR_THEAD}<tbody></tbody></table></div>
+    <div class="table-foot hidden"></div>`;
+  const togglable=live;
+  const allSw=panel.querySelector('.js-mirror-allsw');
+  allSw.dataset.firm=firm;
+  allSw.checked=togglable.length>0 && togglable.every(mirrorEnabled);
+  allSw.disabled=!togglable.length;
+  allSw.onchange=()=>toggleMirrorGroup(firm, allSw.checked);
+  const body=panel.querySelector('tbody');
+  const hiddenRows=list.filter(mirrorTerminal);
+  if(!live.length && !(showHidden && hiddenRows.length)){
+    body.innerHTML=`<tr><td colspan="8" class="muted" style="text-align:center">
+      ${hiddenRows.length?'no active accounts':'no accounts'}</td></tr>`;
+  } else {
+    for(const m of live) body.appendChild(buildMirrorRow(m));
+    if(showHidden) for(const m of hiddenRows) body.appendChild(buildMirrorRow(m));
+  }
+  const foot=panel.querySelector('.table-foot');
+  if(hiddenRows.length){
+    foot.classList.remove('hidden');
+    const n=hiddenRows.length;
+    foot.innerHTML=showHidden
+      ?`<span>${n} account${n>1?'s':''} (closed)</span>
+         <button class="linkbtn" onclick="toggleHidden()">hide</button>`
+      :`<span>${n} account${n>1?'s':''} hidden (closed)</span>
+         <button class="linkbtn" onclick="toggleHidden()">show</button>`;
+  }
+  return panel;
+}
+
+let _mirrorSig='';
 function renderMirrorGroups(){
   const host=$('#mirrorGroups');
   if(!host) return;
+  // Re-rendered on every mirrors fetch AND every leader snapshot (the plan
+  // cells read LAST_SNAP) - the signature keeps identical pushes from wiping
+  // hover/toggle state, same trick as the leader tables.
+  const planBits=MIRROR_LIST.map(m=>{
+    const l=((LAST_SNAP&&LAST_SNAP.accounts)||[]).find(a=>a.account_id===m.leader_id);
+    return l?[l.plan_action,l.plan_side,l.plan_entry,l.plan_contracts,l.terminal,l.enabled]:null;
+  });
+  const sig=JSON.stringify([MIRROR_LIST,showHidden,[...mirrorPending],planBits]);
+  if(sig===_mirrorSig) return;
+  _mirrorSig=sig;
   host.innerHTML='';
   if(!MIRROR_LIST.length) return;
   const byFirm={};
   for(const m of MIRROR_LIST) (byFirm[m.firm]=byFirm[m.firm]||[]).push(m);
-  for(const firm of Object.keys(byFirm).sort()){
-    const list=byFirm[firm];
-    const live=list.filter(m=>!['blown','retired'].includes(m.phase));
-    const nEval=live.filter(m=>m.phase==='eval').length;
-    const nFunded=live.filter(m=>m.phase==='funded').length;
-    const meta=[`${live.length} active`, nEval?`${nEval} eval`:'',
-      nFunded?`${nFunded} funded`:'', 'P/L synced via Rabbit']
-      .filter(Boolean).join(' · ');
-    const rows=list.map(m=>{
-      const term=['blown','retired'].includes(m.phase);
-      return `<tr class="${term?'dim':''}">
-        <td><div class="name">${esc(m.alias||m.mirror_id)}</div>
-          <div class="muted mono">${esc(m.account_number||m.mirror_id)}</div></td>
-        <td><span class="pill ${PHASE_PILL[m.phase]||'idle'}">${esc(m.phase)}</span></td>
-        <td class="muted">${esc(mirrorLifecycle(m))}</td>
-        <td class="mono">${mirrorLeader(m)}</td>
-        <td class="mono">${fmtMult(m.multiplier)}×</td>
-        <td class="mono">${fmtUsd(m.equity)}</td>
-        <td class="mono">${fmtUsd(m.room)}</td>
-        <td class="mono">${mirrorWinDays(m)}</td>
-        <td class="${m.last_verified?'muted':''}"
-          style="${m.last_verified?'':'color:var(--warn)'}">${esc(m.last_verified||'never')}</td>
-      </tr>`;
-    }).join('');
-    const panel=document.createElement('div');
-    panel.className='panel';
-    panel.style.marginBottom='18px';
-    panel.innerHTML=`<div class="head"><h2>${esc(FIRM_SHORT[firm]||firm)}</h2>
-        <span class="muted">${meta}</span></div>
-      <div class="tablewrap"><table style="min-width:900px"><thead><tr>
-        <th>Account</th><th>Phase</th><th>Status</th><th>Leader</th><th>Mult</th>
-        <th>P/L</th><th>Room</th><th>Win days</th><th>Last synced</th></tr></thead>
-        <tbody>${rows}</tbody></table></div>`;
-    host.appendChild(panel);
+  for(const firm of Object.keys(byFirm).sort())
+    host.appendChild(buildMirrorPanel(firm, byFirm[firm]));
+}
+
+// Mirror enable/disable: optimistic like the leader toggles, but the effect is
+// copier mapping (queued plan line + Rabbit's next sync), not order placement.
+async function toggleMirror(mid, el){
+  mirrorPending.set(mid, el.checked);
+  const m=MIRROR_LIST.find(x=>x.mirror_id===mid);
+  const tr=el.closest('tr');
+  if(tr&&m){
+    tr.classList.toggle('dim', mirrorTerminal(m)||!el.checked);
+    const cell=tr.querySelector('.plan-cell');
+    if(cell) cell.innerHTML=mirrorPlanCell(m);
   }
+  syncMirrorMasters();
+  try{
+    const r=await jfetch(`/api/mirrors/${encodeURIComponent(mid)}/update`,{method:'POST',
+      headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:el.checked})});
+    if(!r.ok) throw new Error('update failed');
+  }catch(e){
+    mirrorPending.delete(mid);
+    toast('Could not update the mirror');
+  }
+  loadMirrors(); if(CUR_PAGE==='ops') loadOps();
+}
+async function toggleMirrorGroup(firm, on){
+  const ids=new Set(MIRROR_LIST.filter(m=>m.firm===firm&&!mirrorTerminal(m))
+    .map(m=>m.mirror_id));
+  if(!ids.size) return;
+  for(const id of ids) mirrorPending.set(id, on);
+  // rows update IN PLACE so the toggle thumbs slide instead of snapping
+  document.querySelectorAll('#mirrorGroups tr[data-mid]').forEach(tr=>{
+    const id=tr.dataset.mid;
+    if(!ids.has(id)) return;
+    const m=MIRROR_LIST.find(x=>x.mirror_id===id);
+    const cb=tr.querySelector('.sw input');
+    if(cb) cb.checked=on;
+    tr.classList.toggle('dim', !on);
+    const cell=tr.querySelector('.plan-cell');
+    if(cell&&m) cell.innerHTML=mirrorPlanCell(m);
+  });
+  try{
+    await Promise.all([...ids].map(id=>jfetch(`/api/mirrors/${encodeURIComponent(id)}/update`,{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({enabled:on})})));
+  }catch(e){
+    for(const id of ids) mirrorPending.delete(id);
+    toast('Could not update some mirrors');
+  }
+  loadMirrors(); if(CUR_PAGE==='ops') loadOps();
+}
+function syncMirrorMasters(){
+  document.querySelectorAll('.js-mirror-allsw').forEach(sw=>{
+    const list=MIRROR_LIST.filter(m=>m.firm===sw.dataset.firm&&!mirrorTerminal(m));
+    sw.checked=list.length>0&&list.every(mirrorEnabled);
+  });
 }
 
 function renderMirrorTable(){

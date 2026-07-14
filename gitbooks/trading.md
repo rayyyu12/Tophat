@@ -1,7 +1,8 @@
 # Trading
 
 The live control room: today's plan and execution for every leader account,
-one table per API key.
+one table per API key — followed by one panel per mirror firm with the same
+columns, so the whole fleet reads as a single aligned grid.
 
 ## Stat cards
 
@@ -18,6 +19,25 @@ one table per API key.
   - `IDLE - waiting for an eval/nuke slot`: the account is queued behind the daily cap (1 nuke, 2 evals per key).
   - `PAYOUT READY`: parked until you withdraw at Topstep and press **Mark withdrawn**.
 - **Enabled**: per-row switch; the header switch toggles the whole table. Disabled outranks everything except terminal states.
+
+## Mirror firm panels
+
+One panel per follower firm (Lucid / Tradeify / Apex) below the leader tables,
+with the leader tables' exact columns:
+
+- **Balance** is inferred (phase-start anchor + booked P/L). A dash means no
+  anchor yet - sync the balance or let Rabbit's balance report capture it.
+- **Today's plan** shows the leader's plan scaled to this mirror's multiplier -
+  that is what the copier will fire into the account. `IDLE` explains itself in
+  the note (no leader mapped, waiting for a fresh leader, leader closed).
+- **Position** is always "-" - Tradecopia does not report mirror positions.
+- **Enabled** drives the copier, not order placement: flipping it queues a
+  MAP/UNMAP line on Operations and Rabbit rewrites Tradecopia at its next sync
+  (nightly, or Sync now). The header switch flips the whole firm.
+- Per-mirror copier detail - leader, multiplier, room, win days, last synced -
+  lives on **Operations → Mirror ledger** (and the Accounts page editor).
+- Blown / retired mirrors fold into the same "N hidden - show" footer as the
+  leader tables.
 
 ## Hidden rows
 
