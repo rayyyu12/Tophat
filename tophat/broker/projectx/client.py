@@ -20,6 +20,16 @@ ET = ZoneInfo("America/New_York")
 DEFAULT_API_URL = "https://api.topstepx.com"
 DEFAULT_RTC_URL = "https://rtc.topstepx.com"
 NQ_SYMBOL = "F.US.ENQ"
+# Keep pooled connections alive across automation ticks (~30s apart): the
+# 09:45:00 fire tick then reuses the tunnel the 09:44 tick just used — no TCP/
+# TLS/proxy-CONNECT handshake on the critical path. Kept under typical peer
+# idle timeouts (60s) so we never sit on a socket the far side already closed.
+KEEPALIVE_EXPIRY_S = 50.0
+# Order/place must never be blind-retried after a transport error — the server
+# may have accepted it (the fire path's open-position check covers that case).
+# Cancel/close are also state-changing; everything else is a read or auth.
+_NO_RETRY_PATHS = frozenset({
+    "/api/Order/place", "/api/Order/cancel", "/api/Position/closeContract"})
 
 
 class ProjectXError(RuntimeError):
@@ -34,12 +44,23 @@ class ProjectXClient:
         *,
         base_url: str | None = None,
         timeout: float = 30.0,
+        proxy: str | None = None,
     ) -> None:
         self.username = username or os.getenv("PROJECTX_USERNAME", "")
         self.api_key = api_key or os.getenv("PROJECTX_API_KEY", "")
         self.base_url = (base_url or os.getenv("PROJECTX_API_URL", DEFAULT_API_URL)).rstrip("/")
         self.rtc_url = os.getenv("PROJECTX_RTC_URL", DEFAULT_RTC_URL).rstrip("/")
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        # Egress proxy for every REST call (Settings → Proxy, or env fallback).
+        # Empty/None = direct from this machine's IP.
+        self.proxy = (proxy or os.getenv("PROJECTX_PROXY_URL", "")).strip() or None
+        transport = httpx.HTTPTransport(
+            proxy=self.proxy,
+            retries=2,   # connect-phase retries only (proxy/TCP dial); never resends a request
+            limits=httpx.Limits(max_connections=10, max_keepalive_connections=5,
+                                keepalive_expiry=KEEPALIVE_EXPIRY_S),
+        )
+        self._client = httpx.Client(base_url=self.base_url, timeout=timeout,
+                                    transport=transport)
         self._token: str | None = None
 
     @property
@@ -156,6 +177,21 @@ class ProjectXClient:
         })
         return data.get("bars", [])
 
+    def _send(self, path: str, body: dict, headers: dict) -> httpx.Response:
+        """One POST, resent once after a transport-level failure: a pooled
+        connection the peer quietly closed surfaces as ReadError/
+        RemoteProtocolError on reuse, and the resend lands on a fresh
+        connection. Mutating paths never resend — the first attempt may have
+        been processed (the fire path's open-position check owns that case)."""
+        try:
+            return self._client.post(path, json=body, headers=headers)
+        except httpx.TransportError as exc:
+            if path in _NO_RETRY_PATHS:
+                raise
+            _dbg.warning("transport error on %s (%s: %s) — retrying on a fresh "
+                         "connection", path, type(exc).__name__, exc)       # [debuglog]
+            return self._client.post(path, json=body, headers=headers)
+
     def _post(self, path: str, body: dict, *, auth: bool = True) -> dict:
         if auth:
             self._ensure_token()
@@ -163,12 +199,12 @@ class ProjectXClient:
         if auth and self._token:
             headers["Authorization"] = f"Bearer {self._token}"
         t0 = time.perf_counter()                                            # [debuglog]
-        resp = self._client.post(path, json=body, headers=headers)
+        resp = self._send(path, body, headers)
         if resp.status_code == 401 and auth:
             _dbg.warning("401 on %s — re-authenticating", path)             # [debuglog]
             self.login()
             headers["Authorization"] = f"Bearer {self._token}"
-            resp = self._client.post(path, json=body, headers=headers)
+            resp = self._send(path, body, headers)
         # Rate limited: honor Retry-After, else exponential backoff (0.5/1/2s), and
         # retry a few times so a transient burst self-heals instead of surfacing a 429.
         for attempt in range(3):
@@ -182,7 +218,7 @@ class ProjectXClient:
             wait = min(max(wait, 0.5), 5.0)
             _dbg.warning("429 on %s — backoff %.2fs, retry %d/3", path, wait, attempt + 1)  # [debuglog]
             time.sleep(wait)
-            resp = self._client.post(path, json=body, headers=headers)
+            resp = self._send(path, body, headers)
         # [debuglog] one line per request: path, status, latency. Body only on error
         # (redacted) — success bodies can be large and may echo secrets on auth calls.
         elapsed = (time.perf_counter() - t0) * 1000

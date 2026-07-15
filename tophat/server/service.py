@@ -162,7 +162,8 @@ def make_broker():
     """Mock unless TOPHAT_BROKER=live and ProjectX creds are present."""
     if os.getenv("TOPHAT_BROKER", "mock").lower() == "live":
         from tophat.broker.projectx.broker import ProjectXBroker
-        b = ProjectXBroker()
+        from tophat.broker.projectx.client import ProjectXClient
+        b = ProjectXBroker(ProjectXClient(proxy=load_settings().proxy_url or None))
         b.login()
         return b, "live"
     return MockBroker(), "mock"
@@ -181,10 +182,15 @@ def build_broker_pool() -> list[BrokerHandle]:
     if creds:
         from tophat.broker.projectx.broker import ProjectXBroker
         from tophat.broker.projectx.client import ProjectXClient
+        # The tenant's egress proxy applies to every credential's REST client;
+        # login() below opens (and verifies) the tunnel at pool-build time, so
+        # a bad proxy surfaces as a dashboard error handle — never at fire time.
+        proxy = load_settings().proxy_url or None
         handles: list[BrokerHandle] = []
         for c in creds:
             try:
-                client = ProjectXClient(c.username, c.api_key, base_url=c.base_url or None)
+                client = ProjectXClient(c.username, c.api_key,
+                                        base_url=c.base_url or None, proxy=proxy)
                 broker = ProjectXBroker(client)
                 broker.login()
                 handles.append(BrokerHandle(owner=c.username, broker=broker, mode="live"))

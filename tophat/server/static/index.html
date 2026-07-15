@@ -888,6 +888,9 @@
         <div class="panel"><div class="head"><h2>Notifications</h2>
             <span class="muted">per account — each login has its own</span></div>
           <div style="padding:18px 22px" id="secNotify"></div></div>
+        <div class="panel"><div class="head"><h2>Proxy</h2>
+            <span class="muted">ProjectX requests leave from this IP · blank = direct</span></div>
+          <div style="padding:18px 22px" id="secProxy"></div></div>
       </div>
       <div class="panel" style="margin-top:18px">
         <div class="head"><h2>Copier boxes</h2>
@@ -1494,7 +1497,12 @@ const SCHEMA=[
     ['copier_sync_enabled','Copier sync — Rabbit (true/false)']]],
   ['secNotify',[
     ['discord_webhook_url','Discord webhook URL','password']]],
+  ['secProxy',[
+    ['proxy_url','Proxy (ip:port:user:pass or user:pass@ip:port)','password']]],
 ];
+// Free-text settings — the save handler's number coercion would mangle these
+// (parseFloat('38.154.227.167:5868') === 38.154227167).
+const STRING_KEYS=['discord_webhook_url','proxy_url'];
 // Time fields are entered and shown in the viewer's LOCAL timezone; the backend
 // stores and schedules in ET, so loadSettings/save convert both ways.
 let SETTINGS={};
@@ -1527,6 +1535,22 @@ async function loadSettings(){
       };
       host.appendChild(b);
     }
+    if(sec==='secProxy'){
+      const b=document.createElement('button');
+      b.className='btn'; b.textContent='Test proxy'; b.id='btnTestProxy';
+      b.onclick=async()=>{
+        const proxy_url=host.querySelector('[data-key=proxy_url]').value.trim();
+        b.disabled=true; b.textContent='Testing…';
+        try{
+          const r=await jfetch('/api/settings/test-proxy',{method:'POST',
+            headers:{'Content-Type':'application/json'},body:JSON.stringify({proxy_url})});
+          const d=await r.json().catch(()=>({}));
+          toast(r.ok?`OK — requests leave from ${d.egress_ip}${d.proxied?' (proxied)':' (direct)'}`
+                    :(d.error||'Proxy test failed'));
+        } finally { b.disabled=false; b.textContent='Test proxy'; }
+      };
+      host.appendChild(b);
+    }
   }
 }
 $('#btnSave').onclick=async()=>{
@@ -1537,11 +1561,13 @@ $('#btnSave').onclick=async()=>{
     else if(k==='nuke_entry_time') v=localToEtHHMM(v);
     else if(k==='oco_probe_time') v=v?localToEtHHMM(v):'';
     else if(['auto_execute','auto_disable_on_payout_ready','hedge_guard','copier_sync_enabled'].includes(k)) v=(v.toLowerCase()==='true');
-    else if(!isNaN(parseFloat(v))) v=parseFloat(v);
+    else if(!STRING_KEYS.includes(k) && !isNaN(parseFloat(v))) v=parseFloat(v);
     patch[k]=v;
   });
-  await jfetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
-  toast('Settings saved'); refresh();
+  const r=await jfetch('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(patch)});
+  if(!r.ok){ const e=await r.json().catch(()=>({})); toast(e.error||'Could not save settings'); return; }
+  SETTINGS=await r.json();
+  toast('Settings saved'); loadSettings(); refresh();
 };
 
 // ---- API keys ----

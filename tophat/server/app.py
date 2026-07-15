@@ -668,6 +668,7 @@ def create_app() -> FastAPI:
 
     @app.post("/api/settings")
     async def post_settings(patch: dict):
+        old_proxy = load_settings().proxy_url
         try:
             updated = update_settings(patch)
         except (ValueError, TypeError) as exc:
@@ -675,7 +676,33 @@ def create_app() -> FastAPI:
         # auto_execute drives Execute-button visibility — bust the cache so the
         # change shows on the next refresh instead of waiting out SNAPSHOT_TTL.
         service.invalidate_snapshot_cache()
+        if updated.proxy_url != old_proxy:
+            # Rebuild this user's brokers through the new proxy NOW: login()
+            # re-opens and verifies every tunnel at save time (a bad proxy shows
+            # as an error handle on the dashboard immediately), so the switch
+            # never costs a handshake — let alone a surprise — at an entry time.
+            await asyncio.to_thread(rebuild_pool)
         return asdict(updated)
+
+    @app.post("/api/settings/test-proxy")
+    def test_proxy(body: dict | None = None):
+        """Round-trip the given proxy (blank = direct) and report the egress IP
+        ProjectX would see, then confirm the ProjectX API answers via that route."""
+        import httpx
+        from tophat.store.config import normalize_proxy
+        try:
+            proxy = normalize_proxy(str((body or {}).get("proxy_url", "")))
+        except ValueError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=400)
+        try:
+            with httpx.Client(proxy=proxy or None, timeout=10.0) as c:
+                ip = c.get("https://api.ipify.org").text.strip()
+                # Any HTTP status proves the tunnel reaches the API host.
+                c.head(os.getenv("PROJECTX_API_URL", "https://api.topstepx.com"))
+        except Exception as exc:
+            return JSONResponse(
+                {"error": f"proxy round-trip failed: {exc}"}, status_code=502)
+        return {"ok": True, "egress_ip": ip, "proxied": bool(proxy)}
 
     @app.post("/api/settings/test-webhook")
     def test_webhook(body: dict | None = None):

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
+from urllib.parse import quote, unquote
 
 from tophat.engine import AccountConfig
 from tophat.store import tenant
@@ -64,6 +65,13 @@ class TopHatSettings:
     # posts (copier apply results). Empty = notifications off for this user.
     discord_webhook_url: str = ""
 
+    # --- network ---
+    # Egress proxy for ALL ProjectX REST traffic (Settings page). Stored
+    # normalized as scheme://user:pass@host:port; empty = direct (the server's
+    # own IP). Changing it rebuilds the broker pool immediately, so the tunnel
+    # is connected and logged in long before any entry time (see app.py).
+    proxy_url: str = ""
+
     # --- display ---
     show_disabled: bool = True
 
@@ -99,6 +107,59 @@ def _norm_hhmm(t: str) -> str:
     return f"{h:02d}:{m:02d}"
 
 
+_PROXY_SCHEMES = ("http", "https", "socks5", "socks5h")
+_PROXY_FORMATS_HINT = ("expected one of: host:port, host:port:user:pass, "
+                       "user:pass@host:port, or scheme://user:pass@host:port")
+
+
+def normalize_proxy(raw: str) -> str:
+    """Normalize a pasted proxy into a canonical scheme://user:pass@host:port URL.
+
+    Vendors export proxies in several shapes; all of these are accepted:
+        host:port
+        host:port:user:pass            (the common "ip:port:user:pass" list format)
+        user:pass@host:port
+        scheme://[user:pass@]host:port (http / https / socks5)
+    Blank stays blank (= direct connection). Anything else raises ValueError —
+    a malformed proxy must fail at save time, not at 09:45 when the fire path
+    first tries to use it. Credentials are percent-encoded in the result so
+    passwords containing ':' '@' '/' survive the URL form httpx parses.
+    """
+    raw = str(raw or "").strip()
+    if not raw:
+        return ""
+    scheme, rest = "http", raw
+    if "://" in raw:
+        scheme, rest = raw.split("://", 1)
+        scheme = scheme.lower()
+        if scheme not in _PROXY_SCHEMES:
+            raise ValueError(f"unsupported proxy scheme {scheme!r} "
+                             f"(use http, https or socks5)")
+    user = pw = ""
+    if "@" in rest:                          # user:pass@host:port (last @ splits)
+        cred, rest = rest.rsplit("@", 1)
+        user, _, pw = cred.partition(":")
+    parts = rest.split(":")
+    if len(parts) == 4 and not user:         # host:port:user:pass
+        host, port_s, user, pw = parts
+    elif len(parts) == 2:
+        host, port_s = parts
+    else:
+        raise ValueError(f"invalid proxy {raw!r} — {_PROXY_FORMATS_HINT}")
+    host = host.strip()
+    try:
+        port = int(port_s)
+    except ValueError:
+        raise ValueError(f"invalid proxy port {port_s!r} — {_PROXY_FORMATS_HINT}") from None
+    if not host or not (0 < port < 65536):
+        raise ValueError(f"invalid proxy {raw!r} — {_PROXY_FORMATS_HINT}")
+    # unquote-then-quote: idempotent for already-encoded pastes, encodes raw specials
+    cred = ""
+    if user:
+        cred = f"{quote(unquote(user), safe='')}:{quote(unquote(pw), safe='')}@"
+    return f"{scheme}://{cred}{host}:{port}"
+
+
 def update_settings(patch: dict, path: Path | None = None) -> TopHatSettings:
     """Apply a partial update from the dashboard, validate, persist, return the result."""
     path = tenant.resolve(SETTINGS_FILE) if path is None else path
@@ -116,5 +177,6 @@ def update_settings(patch: dict, path: Path | None = None) -> TopHatSettings:
         raise ValueError("discord_webhook_url must be a Discord webhook URL "
                          "(https://discord.com/api/webhooks/...)")
     s.discord_webhook_url = u
+    s.proxy_url = normalize_proxy(s.proxy_url)
     save_settings(s, path)
     return s

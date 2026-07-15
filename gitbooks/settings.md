@@ -39,6 +39,25 @@ visible to (or affects) any other user.
 | Auto-disable on payout | Payout-ready accounts switch off until you withdraw |
 | Hedge guard | Skip any account that is not flat at fire time |
 
+## Proxy
+
+- Routes **all ProjectX REST traffic** (auth, account reads, order placement)
+  through the given proxy, so requests leave from the proxy's IP instead of the
+  server's. Blank = direct connection (the default).
+- Accepts any of the usual paste formats: `ip:port`, `ip:port:user:pass`,
+  `user:pass@ip:port`, or a full `http://` / `socks5://` URL. Saved normalized;
+  malformed values are rejected at save time.
+- **Test proxy** round-trips the value in the field and shows the egress IP a
+  request would leave from (works with a blank field too — it then shows the
+  server's own IP).
+- No handshake at fire time: saving a proxy change rebuilds the broker pool
+  immediately — every credential re-logs-in through the new tunnel right then,
+  so a bad proxy shows up as a table error on save, not at 09:45. Connections
+  are then kept alive across the automation loop's ~30s ticks, so the entry-time
+  order rides a tunnel that was in use seconds earlier.
+- Applies per login user, like everything else on this page. The proxy adds its
+  own network hop to every request — pick one close to the server region.
+
 ## Behavior notes
 
 - Manual Execute (Trading page) fires regardless of auto-execute - it is an explicit, confirmed operator action.
