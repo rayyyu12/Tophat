@@ -186,6 +186,19 @@ def test_unknown_account_becomes_proposal_never_created():
     assert set(MS.load_mirrors()) == before                # nothing created
 
 
+def test_lucid_prefixes_hint_phase():
+    """Lucid names carry the phase: LFF… = funded, LFE… = eval (2026-07-16,
+    operator-confirmed from the Lucid dashboard)."""
+    out = import_observed(payload(
+        obs("LFF05070551080007", 50_000.0, org="LucidTrading", entity_id="LTT-demo"),
+        obs("LFE05070551080021", 49_577.5, org="LucidTrading", entity_id="LTT-demo"),
+    ), today=TODAY, now=NOW)
+    rows = {r["name"]: r for r in out["results"]}
+    assert rows["LFF05070551080007"]["firm"] == "lucid-50k"
+    assert rows["LFF05070551080007"]["phase_hint"] == "funded"
+    assert rows["LFE05070551080021"]["phase_hint"] == "eval"
+
+
 def test_unknown_stale_disconnected_or_unknown_firm_is_ignored():
     out = import_observed(payload(
         obs("OLD-APEX", 49_000.0, updated_at=STALE, connected=False),

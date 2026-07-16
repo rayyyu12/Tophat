@@ -34,6 +34,33 @@ def test_arm_retry_below_cap_stays_quiet(monkeypatch, tmp_path):
     assert not pushed
 
 
+def test_pull_failure_still_pushes_observed(monkeypatch, tmp_path):
+    """A refused pull must not blind the server (2026-07-16 lockout: zero
+    mirrors -> every pull 409s -> the observe that would surface replacement
+    accounts never ran). full_cycle now observes on the abort path too."""
+    monkeypatch.setattr(rabbit, "LOG_FILE", tmp_path / "rabbit.log")
+    monkeypatch.setattr(rabbit, "STATE_FILE", tmp_path / "rabbit_state.json")
+    monkeypatch.setattr(rabbit, "pull_desired",
+                        lambda cfg: (None, "409: no active mirror accounts"))
+    observed = []
+    monkeypatch.setattr(rabbit, "push_observed",
+                        lambda cfg: observed.append(cfg) or "observed 3: booked 0, stale 0, proposed 3")
+    pushed = []
+    monkeypatch.setattr(rabbit, "push_status",
+                        lambda cfg, status: pushed.append(status))
+
+    assert rabbit.full_cycle({}, None, "manual") is None
+    assert len(observed) == 1
+    # the operator's abort banner carries the observe line, not just the 409
+    assert pushed and pushed[0]["result"] == "aborted"
+    assert "proposed 3" in pushed[0]["detail"]
+
+    # scheduled path: observe still runs, error remembered for the give-up alert
+    assert rabbit.full_cycle({}, None, "scheduled") is None
+    assert len(observed) == 2
+    assert rabbit.load_state()["last_pull_error"] == "409: no active mirror accounts"
+
+
 def test_poll_flag_carries_apply_schedule(monkeypatch):
     """The heartbeat tells TopHat when the nightly apply fires (box-config
     fact), URL-encoded; the Operations page shows it."""

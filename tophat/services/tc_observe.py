@@ -86,7 +86,8 @@ def _proposal_row(a: dict, *, now: datetime,
     name = str(a.get("name") or "").strip()
     firm = _infer_firm(str(a.get("entity_organization") or ""),
                        str(a.get("entity_id") or ""))
-    phase = "funded" if name.upper().startswith("PA") else "eval"
+    # firm funded prefixes: Apex "PA…", Lucid "LFF…" (Lucid evals are "LFE…")
+    phase = "funded" if name.upper().startswith(("PA", "LFF")) else "eval"
     ts = _parse_ts(str(a.get("updated_at") or ""))
     age_ok = ts is not None and (now - ts) <= timedelta(hours=freshness_hours)
     connected = bool(a.get("connected"))

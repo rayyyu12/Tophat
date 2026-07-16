@@ -251,10 +251,17 @@ def full_cycle(cfg: dict, app: tc_apply.AppController, trigger: str, *,
     desired, why = pull_desired(cfg)
     if desired is None:
         log(f"pull failed ({trigger}): {why}")
+        # a refused pull must not blind the server: without this, deleting the
+        # last mirror 409s every pull and the observe that would surface the
+        # replacement accounts never runs (2026-07-16 lockout)
+        observed_line = push_observed(cfg)
         if trigger == "manual":
             # the operator clicked Sync now - tell them why nothing happened
+            detail = f"sync requested, but pull failed - {why}"
+            if observed_line:
+                detail = f"{detail} | {observed_line}"
             push_status(cfg, {"plan_date": "", "result": "aborted",
-                              "detail": f"sync requested, but pull failed - {why}",
+                              "detail": detail,
                               "changes": {}, "verify": {}})
         elif trigger in ("scheduled", "retry"):
             # remembered so the give-up alert can say WHY the night failed
