@@ -9,7 +9,9 @@ Create a login first:  python -m tophat.server.auth adduser you@x.com 'password'
 from __future__ import annotations
 
 import asyncio
+import json
 import os
+import time
 from contextlib import asynccontextmanager
 from dataclasses import asdict
 from pathlib import Path
@@ -37,9 +39,24 @@ PUBLIC_PATHS = {"/login", "/api/login", "/api/healthz",
                 "/api/ops/tc-poll", "/api/ops/tc-observed",
                 "/api/ops/tc-heartbeat"}
 SECURE_COOKIES = os.getenv("TOPHAT_HTTPS", "").lower() in ("1", "true", "yes")
-# How often the WS pushes a snapshot to the UI. Cheap: build_snapshot is cached
+# How often the WS *builds* a snapshot for the UI. Cheap: build_snapshot is cached
 # (SNAPSHOT_TTL), so a fast UI cadence does NOT mean a fast broker poll cadence.
 WS_INTERVAL = float(os.getenv("TOPHAT_WS_INTERVAL", "3"))
+# A snapshot is only *sent* when it differs from the last one this socket got
+# (egress is metered on Render; identical re-sends were ~1 GB/day per open tab).
+# The heartbeat floor still pushes one every few minutes so the UI's "as of"
+# clock advances and a client can never drift for long.
+WS_HEARTBEAT = float(os.getenv("TOPHAT_WS_HEARTBEAT", "300"))
+# Fields that change on every build even when nothing real moved.
+_WS_VOLATILE = ("as_of", "as_of_iso")
+
+
+def ws_comparable(snap: dict) -> str:
+    """Canonical form of a dashboard snapshot for change detection: volatile
+    timestamp fields stripped, serialized (not referenced) so later in-place
+    mutation of cached rows can't make a stale copy compare equal."""
+    return json.dumps({k: v for k, v in snap.items() if k not in _WS_VOLATILE},
+                      sort_keys=True, default=str)
 
 
 @asynccontextmanager
@@ -743,13 +760,21 @@ def create_app() -> FastAPI:
         # (asyncio.to_thread carries the context into the worker thread).
         tenant.set_user(uid)
         await socket.accept()
+        last_key: str | None = None
+        last_sent = 0.0
         try:
             while True:
                 # In a worker thread: a cache-miss build does REST round-trips, and
                 # blocking the event loop here would delay the automation loop's
                 # precisely timed 09:45:00 wake-up.
+                # Building every tick (not just sending) is load-bearing: the
+                # ratchet / auto-blown / new-account bookkeeping rides the build.
                 snap = await asyncio.to_thread(service.build_dashboard, current_pool())
-                await socket.send_json(snap)
+                key = ws_comparable(snap)
+                now = time.monotonic()
+                if key != last_key or now - last_sent >= WS_HEARTBEAT:
+                    await socket.send_json(snap)
+                    last_key, last_sent = key, now
                 await asyncio.sleep(WS_INTERVAL)
         except (WebSocketDisconnect, Exception):
             return
